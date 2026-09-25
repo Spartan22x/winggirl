@@ -1,55 +1,110 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { StyleSheet, View } from 'react-native';
-import { Button, Card, Screen, StatusPill, Text } from '@/src/components';
+import { useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Avatar, Card, Modal, PrimaryButton, Screen, SecondaryButton, SectionHeader, StatusPill, Text, UserCard } from '@/src/components';
+import { currentUser, mockUsers } from '@/src/mockData';
 import { colors, radii, spacing } from '@/src/theme';
 
+const greetingText = () => {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+};
+
 export default function HomeScreen() {
+  const [isAvailable, setIsAvailable] = useState(true);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [showPlanComposer, setShowPlanComposer] = useState(false);
+
+  const availableFriends = useMemo(() => mockUsers.filter((user) => user.available).length, []);
+  const highlightedUsers = mockUsers.filter((user) => user.available).slice(0, 4);
+  const selectedUser = mockUsers.find((user) => user.id === selectedUserId) ?? null;
+
   return (
     <Screen>
       <View style={styles.header}>
         <View>
           <Text variant="label" style={styles.eyebrow}>FRIDAY, SEPTEMBER 25</Text>
-          <Text variant="display" style={styles.greeting}>Good evening, Maya</Text>
+          <Text variant="display" style={styles.greeting}>{greetingText()}, {currentUser.firstName}</Text>
         </View>
-        <View style={styles.avatar}><Text variant="title" style={styles.avatarText}>M</Text></View>
+        <Avatar label={currentUser.firstName.slice(0, 1)} color={colors.navy} size={48} />
       </View>
 
       <Card style={styles.availabilityCard}>
         <View style={styles.availabilityTop}>
           <View style={styles.iconCircle}><Ionicons name="sparkles" size={20} color={colors.coralDark} /></View>
-          <StatusPill label="You are available" />
+          <StatusPill label={isAvailable ? 'You are available' : 'You are taking a quiet night'} />
         </View>
-        <Text variant="title" style={styles.cardTitle}>Make tonight count.</Text>
-        <Text style={styles.cardBody}>Let your Wings know you are free and open to making a plan.</Text>
-        <Button label="See who is around" onPress={() => undefined} style={styles.cardButton} />
+
+        <View style={styles.toggleRow}>
+          <Text variant="title" style={styles.cardTitle}>I&apos;m available tonight</Text>
+          <Pressable
+            accessibilityRole="switch"
+            onPress={() => setIsAvailable((value) => !value)}
+            style={[styles.switch, isAvailable && styles.switchOn]}
+          >
+            <View style={[styles.switchThumb, isAvailable && styles.switchThumbOn]} />
+          </Pressable>
+        </View>
+
+        <Text style={styles.cardBody}>{isAvailable ? 'Your Wings can see you\'re available.' : 'You are keeping your evening flexible.'}</Text>
+        <Text style={styles.countText}>{availableFriends} friends are free tonight</Text>
+        <PrimaryButton label="Make a plan" onPress={() => setShowPlanComposer(true)} style={styles.cardButton} />
       </Card>
 
-      <View style={styles.sectionHeader}>
-        <Text variant="title">Your evening</Text>
-        <Text variant="label" style={styles.link}>VIEW ALL</Text>
-      </View>
+      <SectionHeader title="Available women" action="VIEW ALL" />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalList} contentContainerStyle={styles.listContent}>
+        {highlightedUsers.map((user) => (
+          <UserCard key={user.id} firstName={user.firstName} age={user.age} distance={user.distance} interests={user.interests} available={user.available} avatarColor={user.avatarColor} onPress={() => setSelectedUserId(user.id)} />
+        ))}
+      </ScrollView>
+
+      <SectionHeader title="Recommended social plans" action="SEE ALL" />
       <Card style={styles.planCard}>
         <View style={styles.planIcon}><Ionicons name="wine-outline" size={22} color={colors.coralDark} /></View>
         <View style={styles.planCopy}>
           <Text variant="label" style={styles.planLabel}>SUGGESTED PLAN</Text>
-          <Text variant="title" style={styles.planTitle}>A little after-work sparkle</Text>
+          <Text variant="title" style={styles.planTitle}>After-work sparkle</Text>
           <Text style={styles.planMeta}>3 Wings nearby · Tonight at 7:00 PM</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color={colors.inkSoft} />
       </Card>
 
-      <View style={styles.sectionHeader}>
-        <Text variant="title">People to say hello to</Text>
-      </View>
-      <View style={styles.peopleRow}>
-        {['A', 'J', 'S'].map((initial, index) => (
-          <View key={initial} style={[styles.personAvatar, { backgroundColor: [colors.coralSoft, '#E5EAF1', '#F2E7D7'][index] }]}>
-            <Text variant="title" style={styles.personInitial}>{initial}</Text>
+      <Modal visible={Boolean(selectedUser)} onClose={() => setSelectedUserId(null)}>
+        {selectedUser ? (
+          <Card style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Avatar label={selectedUser.firstName.slice(0, 1)} color={selectedUser.avatarColor} size={58} textColor={colors.navy} />
+              <View style={styles.modalMeta}>
+                <Text variant="title">{selectedUser.firstName}, {selectedUser.age}</Text>
+                <Text style={styles.modalDistance}>{selectedUser.distance} away</Text>
+              </View>
+            </View>
+            <Text style={styles.modalBio}>{selectedUser.bio}</Text>
+            <View style={styles.modalTagRow}>
+              {selectedUser.interests.map((interest) => (
+                <View key={interest} style={styles.modalTag}><Text variant="label" style={styles.modalTagText}>{interest}</Text></View>
+              ))}
+            </View>
+            <View style={styles.actionRow}>
+              <PrimaryButton label="Start a plan" onPress={() => { setSelectedUserId(null); setShowPlanComposer(true); }} style={styles.primaryAction} />
+              <SecondaryButton label="Cancel" onPress={() => setSelectedUserId(null)} style={styles.cancelButton} />
+            </View>
+          </Card>
+        ) : null}
+      </Modal>
+
+      <Modal visible={showPlanComposer} onClose={() => setShowPlanComposer(false)}>
+        <Card style={styles.planComposerCard}>
+          <Text variant="title" style={styles.composerTitle}>Create a plan</Text>
+          <Text style={styles.composerBody}>A warm, easy evening is just a few choices away.</Text>
+          <View style={styles.actionRow}>
+            <PrimaryButton label="Choose a plan" onPress={() => setShowPlanComposer(false)} style={styles.primaryAction} />
+            <SecondaryButton label="Cancel" onPress={() => setShowPlanComposer(false)} style={styles.cancelButton} />
           </View>
-        ))}
-        <View style={styles.morePeople}><Text variant="label" style={styles.moreText}>+8</Text></View>
-        <Text style={styles.peopleCaption}>women are open to plans nearby</Text>
-      </View>
+        </Card>
+      </Modal>
     </Screen>
   );
 }
@@ -58,26 +113,39 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xl },
   eyebrow: { color: colors.coralDark, marginBottom: spacing.sm },
   greeting: { fontSize: 28, lineHeight: 34 },
-  avatar: { width: 48, height: 48, borderRadius: radii.pill, backgroundColor: colors.navy, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { color: colors.white },
   availabilityCard: { backgroundColor: colors.navy, borderColor: colors.navy, padding: spacing.lg, marginBottom: spacing.xl },
   availabilityTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.lg },
   iconCircle: { width: 38, height: 38, borderRadius: radii.pill, backgroundColor: colors.coralSoft, alignItems: 'center', justifyContent: 'center' },
-  cardTitle: { color: colors.white, marginBottom: spacing.sm },
-  cardBody: { color: '#CBD2D9', marginBottom: spacing.lg },
-  cardButton: { alignSelf: 'flex-start', paddingHorizontal: spacing.lg },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md },
-  link: { color: colors.coralDark },
+  toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
+  cardTitle: { color: colors.white, marginBottom: 0 },
+  cardBody: { color: '#CBD2D9', marginBottom: spacing.sm },
+  countText: { color: colors.white, marginBottom: spacing.lg, opacity: 0.9 },
+  switch: { width: 56, height: 32, backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 999, justifyContent: 'center', paddingHorizontal: 4 },
+  switchOn: { backgroundColor: colors.coral },
+  switchThumb: { width: 22, height: 22, borderRadius: 999, backgroundColor: colors.white, alignSelf: 'flex-start' },
+  switchThumbOn: { alignSelf: 'flex-end' },
+  cardButton: { alignSelf: 'flex-start' },
+  horizontalList: { marginBottom: spacing.xl },
+  listContent: { paddingRight: spacing.md },
   planCard: { flexDirection: 'row', alignItems: 'center', padding: spacing.md, marginBottom: spacing.xl },
   planIcon: { width: 48, height: 48, borderRadius: radii.sm, backgroundColor: colors.coralSoft, alignItems: 'center', justifyContent: 'center', marginRight: spacing.md },
   planCopy: { flex: 1 },
   planLabel: { color: colors.coralDark, marginBottom: 2 },
   planTitle: { fontSize: 17, lineHeight: 22, marginBottom: 2 },
   planMeta: { fontSize: 13, lineHeight: 18, color: colors.inkSoft },
-  peopleRow: { flexDirection: 'row', alignItems: 'center' },
-  personAvatar: { width: 42, height: 42, borderRadius: radii.pill, alignItems: 'center', justifyContent: 'center', marginRight: -8, borderWidth: 2, borderColor: colors.background },
-  personInitial: { fontSize: 16 },
-  morePeople: { width: 42, height: 42, borderRadius: radii.pill, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center', marginLeft: spacing.sm },
-  moreText: { color: colors.coralDark },
-  peopleCaption: { flex: 1, marginLeft: spacing.md, fontSize: 13, lineHeight: 18, color: colors.inkSoft },
+  modalCard: { width: '100%', maxWidth: 360, borderRadius: 24, padding: spacing.lg },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.md },
+  modalMeta: { marginLeft: spacing.md },
+  modalDistance: { color: colors.inkSoft, marginTop: 4 },
+  modalBio: { color: colors.navyMuted, marginBottom: spacing.md },
+  modalTagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: spacing.lg },
+  modalTag: { backgroundColor: colors.surfaceMuted, borderRadius: radii.pill, paddingHorizontal: spacing.sm, paddingVertical: 6 },
+  modalTagText: { color: colors.navyMuted },
+  modalButton: { alignSelf: 'stretch' },
+  planComposerCard: { width: '100%', maxWidth: 360, borderRadius: 24, padding: spacing.lg },
+  composerTitle: { marginBottom: spacing.sm },
+  composerBody: { color: colors.navyMuted, marginBottom: spacing.lg },
+  actionRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  cancelButton: { minWidth: 96, flex: 0.5 },
+  primaryAction: { flex: 1.5 },
 });
