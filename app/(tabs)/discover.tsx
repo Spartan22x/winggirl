@@ -1,8 +1,10 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { Card, FilterChip, Screen, Text, UserCard, Avatar, Modal, PrimaryButton, SecondaryButton } from '@/src/components';
-import { mockUsers } from '@/src/mockData';
+import { getPublicProfiles } from '@/src/data/api';
+import type { UserProfile } from '@/src/data/types';
+import { useAuth } from '@/src/auth/AuthProvider';
 import { colors, radii, spacing } from '@/src/theme';
 
 const ageOptions = ['Any age', '20s', '30s'];
@@ -11,6 +13,8 @@ const interestOptions = ['Coffee', 'Walks', 'Live music', 'Fitness'];
 const activityOptions = ['Dinner', 'Drinks', 'Coffee', 'Walk'];
 
 export default function DiscoverScreen() {
+  const { user } = useAuth();
+  const [users, setUsers] = useState<UserProfile[]>([]);
   const [selectedAge, setSelectedAge] = useState('Any age');
   const [selectedDistance, setSelectedDistance] = useState('Any distance');
   const [selectedInterest, setSelectedInterest] = useState<string | null>('Coffee');
@@ -20,19 +24,24 @@ export default function DiscoverScreen() {
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [showPlanComposer, setShowPlanComposer] = useState(false);
 
+  useEffect(() => {
+    if (!user) return;
+    getPublicProfiles(user.id).then(setUsers).catch(() => undefined);
+  }, [user]);
+
   const filteredUsers = useMemo(() => {
-    return mockUsers.filter((user) => {
-      const matchesAge = selectedAge === 'Any age' || (selectedAge === '20s' ? user.age < 30 : user.age >= 30);
-      const matchesDistance = selectedDistance === 'Any distance' || (selectedDistance === '< 1 mi' ? Number.parseFloat(user.distance) < 1 : Number.parseFloat(user.distance) < 3);
-      const matchesInterest = !selectedInterest || user.interests.includes(selectedInterest);
-      const matchesActivity = !selectedActivity || user.activity === selectedActivity;
-      const matchesFriends = !friendsOnly || user.friends >= 3;
-      const matchesFriendsOfFriends = !friendsOfFriends || user.friendsOfFriends;
+    return users.filter((nextUser) => {
+      const matchesAge = selectedAge === 'Any age' || (selectedAge === '20s' ? nextUser.age < 30 : nextUser.age >= 30);
+      const matchesDistance = selectedDistance === 'Any distance' || selectedDistance === 'Nearby';
+      const matchesInterest = !selectedInterest || nextUser.interests.includes(selectedInterest);
+      const matchesActivity = !selectedActivity || nextUser.activity === selectedActivity;
+      const matchesFriends = !friendsOnly || nextUser.friends >= 3;
+      const matchesFriendsOfFriends = !friendsOfFriends || nextUser.friendsOfFriends;
       return matchesAge && matchesDistance && matchesInterest && matchesActivity && matchesFriends && matchesFriendsOfFriends;
     });
-  }, [selectedAge, selectedDistance, selectedInterest, selectedActivity, friendsOnly, friendsOfFriends]);
+  }, [users, selectedAge, selectedDistance, selectedInterest, selectedActivity, friendsOnly, friendsOfFriends]);
 
-  const selectedUser = mockUsers.find((user) => user.id === selectedUserId) ?? null;
+  const selectedUser = users.find((nextUser) => nextUser.id === selectedUserId) ?? null;
 
   return (
     <Screen>

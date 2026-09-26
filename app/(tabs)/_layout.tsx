@@ -1,5 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Tabs } from 'expo-router';
+import { Redirect, Tabs } from 'expo-router';
+import { ActivityIndicator, View } from 'react-native';
+import { useAuth } from '@/src/auth/AuthProvider';
 import { colors, typography } from '@/src/theme';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -13,6 +15,11 @@ const icons: Record<string, { active: IconName; inactive: IconName }> = {
 };
 
 export default function TabsLayout() {
+  const { user, loading } = useAuth();
+
+  if (loading) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator /></View>;
+  if (!user) return <Redirect href="/(auth)/sign-in" />;
+
   return (
     <Tabs
       screenOptions={({ route }) => ({

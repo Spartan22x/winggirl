@@ -1,12 +1,15 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, TextInput, View } from 'react-native';
 import { Card, MessagePreview, Modal, PrimaryButton, Screen, SecondaryButton, Text } from '@/src/components';
-import { initialConversations } from '@/src/mockData';
+import { getConversations, sendMessage as sendMessageToSupabase } from '@/src/data/api';
+import type { Conversation } from '@/src/data/types';
+import { useAuth } from '@/src/auth/AuthProvider';
 import { colors, radii, spacing } from '@/src/theme';
 
 export default function MessagesScreen() {
-  const [conversations, setConversations] = useState(initialConversations);
+  const { user } = useAuth();
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [draftMessage, setDraftMessage] = useState('');
 
@@ -14,18 +17,15 @@ export default function MessagesScreen() {
     ? conversations.find((conversation) => conversation.id === activeConversationId)
     : undefined;
 
-  const sendMessage = () => {
-    if (!draftMessage.trim() || !activeConversation) return;
+  useEffect(() => {
+    if (!user) return;
+    getConversations(user.id).then(setConversations).catch(() => undefined);
+  }, [user]);
 
-    const nextMessage = {
-      id: `msg-${Date.now()}`,
-      sender: 'me',
-      text: draftMessage.trim(),
-      time: 'now',
-      me: true,
-    };
-
-    setConversations((current) => current.map((conversation) => conversation.id === activeConversation.id ? { ...conversation, lastMessage: nextMessage.text, lastTime: 'now', messages: [...conversation.messages, nextMessage] } : conversation));
+  const sendMessage = async () => {
+    if (!user || !draftMessage.trim() || !activeConversation) return;
+    await sendMessageToSupabase(user.id, activeConversation.id, draftMessage.trim());
+    setConversations(await getConversations(user.id));
     setDraftMessage('');
   };
 

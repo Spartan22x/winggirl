@@ -1,8 +1,10 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Avatar, Card, Modal, PrimaryButton, Screen, SecondaryButton, SectionHeader, StatusPill, Text, UserCard } from '@/src/components';
-import { currentUser, mockUsers } from '@/src/mockData';
+import { getAvailability, getProfile, getPublicProfiles, setAvailability } from '@/src/data/api';
+import type { UserProfile } from '@/src/data/types';
+import { useAuth } from '@/src/auth/AuthProvider';
 import { colors, radii, spacing } from '@/src/theme';
 
 const greetingText = () => {
@@ -13,22 +15,45 @@ const greetingText = () => {
 };
 
 export default function HomeScreen() {
-  const [isAvailable, setIsAvailable] = useState(true);
+  const { user } = useAuth();
+  const [profile, setProfile] = useState<{ firstName: string; avatarColor: string } | null>(null);
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [isAvailable, setIsAvailable] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [showPlanComposer, setShowPlanComposer] = useState(false);
 
-  const availableFriends = useMemo(() => mockUsers.filter((user) => user.available).length, []);
-  const highlightedUsers = mockUsers.filter((user) => user.available).slice(0, 4);
-  const selectedUser = mockUsers.find((user) => user.id === selectedUserId) ?? null;
+  useEffect(() => {
+    if (!user) return;
+    Promise.all([getProfile(user.id), getPublicProfiles(user.id), getAvailability(user.id)]).then(([nextProfile, nextUsers, nextAvailability]) => {
+      setProfile({ firstName: nextProfile.first_name, avatarColor: nextProfile.avatar_color });
+      setUsers(nextUsers);
+      setIsAvailable(nextAvailability);
+    }).catch(() => undefined);
+  }, [user]);
+
+  const availableFriends = users.filter((nextUser) => nextUser.available).length;
+  const highlightedUsers = users.filter((nextUser) => nextUser.available).slice(0, 4);
+  const selectedUser = users.find((nextUser) => nextUser.id === selectedUserId) ?? null;
+
+  const toggleAvailability = async () => {
+    if (!user) return;
+    const nextValue = !isAvailable;
+    setIsAvailable(nextValue);
+    try {
+      await setAvailability(user.id, nextValue);
+    } catch {
+      setIsAvailable(!nextValue);
+    }
+  };
 
   return (
     <Screen>
       <View style={styles.header}>
         <View>
           <Text variant="label" style={styles.eyebrow}>FRIDAY, SEPTEMBER 25</Text>
-          <Text variant="display" style={styles.greeting}>{greetingText()}, {currentUser.firstName}</Text>
+          <Text variant="display" style={styles.greeting}>{greetingText()}, {profile?.firstName ?? 'there'}</Text>
         </View>
-        <Avatar label={currentUser.firstName.slice(0, 1)} color={colors.navy} size={48} />
+        <Avatar label={(profile?.firstName ?? 'W').slice(0, 1)} color={profile?.avatarColor ?? colors.navy} size={48} />
       </View>
 
       <Card style={styles.availabilityCard}>
@@ -41,7 +66,7 @@ export default function HomeScreen() {
           <Text variant="title" style={styles.cardTitle}>I&apos;m available tonight</Text>
           <Pressable
             accessibilityRole="switch"
-            onPress={() => setIsAvailable((value) => !value)}
+            onPress={toggleAvailability}
             style={[styles.switch, isAvailable && styles.switchOn]}
           >
             <View style={[styles.switchThumb, isAvailable && styles.switchThumbOn]} />

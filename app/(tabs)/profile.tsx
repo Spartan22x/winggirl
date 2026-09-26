@@ -1,25 +1,43 @@
+import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Avatar, Card, PrimaryButton, Screen, SecondaryButton, Text } from '@/src/components';
-import { currentUser } from '@/src/mockData';
+import { getConnectionCount, getProfile, getProfileInterests } from '@/src/data/api';
+import { useAuth } from '@/src/auth/AuthProvider';
 import { colors, radii, spacing } from '@/src/theme';
 
 export default function ProfileScreen() {
+  const { user, signOut } = useAuth();
+  const [profile, setProfile] = useState<{ firstName: string; age: number | null; bio: string; avatarColor: string } | null>(null);
+  const [interests, setInterests] = useState<string[]>([]);
+  const [connectionCount, setConnectionCount] = useState(0);
+
+  useEffect(() => {
+    if (!user) return;
+    Promise.all([getProfile(user.id), getProfileInterests(user.id), getConnectionCount(user.id)]).then(([nextProfile, nextInterests, nextConnectionCount]) => {
+      setProfile({ firstName: nextProfile.first_name, age: nextProfile.age, bio: nextProfile.bio ?? '', avatarColor: nextProfile.avatar_color });
+      setInterests(nextInterests);
+      setConnectionCount(nextConnectionCount);
+    }).catch(() => undefined);
+  }, [user]);
+
+  if (!profile) return null;
+
   return (
     <Screen>
       <Text variant="label" style={styles.eyebrow}>YOUR SPACE</Text>
       <Text variant="display">Profile</Text>
 
       <Card style={styles.profileCard}>
-        <Avatar label={currentUser.firstName.slice(0, 1)} color={currentUser.avatarColor} size={84} textColor={colors.white} />
-        <Text variant="title" style={styles.name}>{currentUser.firstName}, {currentUser.age}</Text>
-        <Text style={styles.location}>Brooklyn, NY</Text>
-        <Text style={styles.bio}>{currentUser.bio}</Text>
+        <Avatar label={profile.firstName.slice(0, 1)} color={profile.avatarColor} size={84} textColor={colors.white} />
+        <Text variant="title" style={styles.name}>{profile.firstName}, {profile.age}</Text>
+        <Text style={styles.location}>Location kept private</Text>
+        <Text style={styles.bio}>{profile.bio}</Text>
       </Card>
 
       <Card style={styles.infoCard}>
         <Text variant="title" style={styles.sectionTitle}>Interests</Text>
         <View style={styles.tagRow}>
-          {currentUser.interests.map((interest) => (
+          {interests.map((interest) => (
             <View key={interest} style={styles.tag}><Text variant="label" style={styles.tagText}>{interest}</Text></View>
           ))}
         </View>
@@ -27,7 +45,7 @@ export default function ProfileScreen() {
 
       <Card style={styles.infoCard}>
         <Text variant="title" style={styles.sectionTitle}>Connections</Text>
-        <Text style={styles.valueText}>{currentUser.connections} local connections</Text>
+        <Text style={styles.valueText}>{connectionCount} local connections</Text>
       </Card>
 
       <Card style={styles.infoCard}>
@@ -49,6 +67,7 @@ export default function ProfileScreen() {
         <SecondaryButton label="Edit Profile" onPress={() => undefined} style={styles.button} />
         <PrimaryButton label="Save changes" onPress={() => undefined} style={styles.button} />
       </View>
+      <SecondaryButton label="Sign out" onPress={signOut} style={styles.signOutButton} />
     </Screen>
   );
 }
@@ -70,4 +89,5 @@ const styles = StyleSheet.create({
   qrText: { fontWeight: '700', fontSize: 22, color: colors.navy },
   actions: { flexDirection: 'row', gap: spacing.md },
   button: { flex: 1 },
+  signOutButton: { marginTop: spacing.md },
 });
