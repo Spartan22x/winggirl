@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
-import { Avatar, Card, PrimaryButton, Screen, SecondaryButton, Text } from '@/src/components';
-import { getConnectionCount, getProfile, getProfileInterests } from '@/src/data/api';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, StyleSheet, TextInput, View } from 'react-native';
+import { Avatar, Card, Modal, PrimaryButton, Screen, SecondaryButton, Text } from '@/src/components';
+import { getConnectionCount, getProfile, getProfileInterests, saveProfile } from '@/src/data/api';
 import { useAuth } from '@/src/auth/AuthProvider';
 import { colors, radii, spacing } from '@/src/theme';
 
@@ -10,17 +10,74 @@ export default function ProfileScreen() {
   const [profile, setProfile] = useState<{ firstName: string; age: number | null; bio: string; avatarColor: string } | null>(null);
   const [interests, setInterests] = useState<string[]>([]);
   const [connectionCount, setConnectionCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [firstName, setFirstName] = useState('');
+  const [age, setAge] = useState('');
+  const [bio, setBio] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState('');
+  const [saveError, setSaveError] = useState(false);
 
-  useEffect(() => {
+  const loadProfile = useCallback(async () => {
     if (!user) return;
-    Promise.all([getProfile(user.id), getProfileInterests(user.id), getConnectionCount(user.id)]).then(([nextProfile, nextInterests, nextConnectionCount]) => {
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const [nextProfile, nextInterests, nextConnectionCount] = await Promise.all([getProfile(user.id), getProfileInterests(user.id), getConnectionCount(user.id)]);
       setProfile({ firstName: nextProfile.first_name, age: nextProfile.age, bio: nextProfile.bio ?? '', avatarColor: nextProfile.avatar_color });
       setInterests(nextInterests);
       setConnectionCount(nextConnectionCount);
-    }).catch(() => undefined);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
   }, [user]);
 
-  if (!profile) return null;
+  useEffect(() => {
+    void loadProfile();
+  }, [loadProfile]);
+
+  const openEditor = () => {
+    if (!profile) return;
+    setFirstName(profile.firstName);
+    setAge(profile.age?.toString() ?? '');
+    setBio(profile.bio);
+    setSaveMessage('');
+    setSaveError(false);
+    setEditing(true);
+  };
+
+  const saveChanges = async () => {
+    if (!user || !firstName.trim() || !age.trim()) {
+      setSaveMessage('Enter your first name and age to continue.');
+      setSaveError(true);
+      return;
+    }
+    setSaving(true);
+    setSaveMessage('');
+    setSaveError(false);
+    try {
+      await saveProfile(user.id, { firstName: firstName.trim(), age: Number(age), bio: bio.trim() });
+      await loadProfile();
+      setEditing(false);
+      setSaveMessage('Profile saved.');
+    } catch {
+      setSaveMessage('Something went wrong saving your profile. Please try again.');
+      setSaveError(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <Screen contentContainerStyle={styles.stateContainer}><ActivityIndicator color={colors.coral} /><Text style={styles.stateText}>Loading your profile...</Text></Screen>;
+
+  if (loadError || !profile) return <Screen contentContainerStyle={styles.stateContainer}>
+    <Text variant="title">Something went wrong loading your profile.</Text>
+    <SecondaryButton label="Try again" onPress={() => void loadProfile()} style={styles.retryButton} />
+  </Screen>;
 
   return (
     <Screen>
@@ -64,15 +121,39 @@ export default function ProfileScreen() {
       </Card>
 
       <View style={styles.actions}>
-        <SecondaryButton label="Edit Profile" onPress={() => undefined} style={styles.button} />
-        <PrimaryButton label="Save changes" onPress={() => undefined} style={styles.button} />
+        <SecondaryButton label="Edit Profile" onPress={openEditor} style={styles.button} />
       </View>
+      {saveMessage ? <Text style={[styles.saveMessage, saveError && styles.saveError]}>{saveMessage}</Text> : null}
       <SecondaryButton label="Sign out" onPress={signOut} style={styles.signOutButton} />
+
+      <Modal visible={editing} onClose={() => { if (!saving) setEditing(false); }}>
+        <Card style={styles.editCard}>
+          <Text variant="title" style={styles.editTitle}>Edit profile</Text>
+          {saveMessage && saveError ? <Text style={styles.saveError}>{saveMessage}</Text> : null}
+          <Text style={styles.inputLabel}>First name</Text>
+          <TextInput value={firstName} onChangeText={setFirstName} style={styles.input} autoCapitalize="words" />
+          <Text style={styles.inputLabel}>Age</Text>
+          <TextInput value={age} onChangeText={setAge} style={styles.input} keyboardType="number-pad" />
+          <Text style={styles.inputLabel}>Bio</Text>
+          <TextInput value={bio} onChangeText={setBio} style={[styles.input, styles.bioInput]} multiline />
+          <Text style={styles.inputLabel}>Interests</Text>
+          <View style={styles.tagRow}>
+            {interests.map((interest) => <View key={interest} style={styles.tag}><Text variant="label" style={styles.tagText}>{interest}</Text></View>)}
+          </View>
+          <View style={styles.editActions}>
+            <PrimaryButton label={saving ? 'Saving...' : 'Save changes'} onPress={() => void saveChanges()} disabled={saving} style={styles.button} />
+            <SecondaryButton label="Cancel" onPress={() => setEditing(false)} disabled={saving} style={styles.button} />
+          </View>
+        </Card>
+      </Modal>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  stateContainer: { flexGrow: 1, alignItems: 'center', justifyContent: 'center' },
+  stateText: { marginTop: spacing.md },
+  retryButton: { marginTop: spacing.lg },
   eyebrow: { color: colors.coralDark, marginBottom: spacing.sm },
   profileCard: { alignItems: 'center', marginTop: spacing.lg, marginBottom: spacing.lg },
   name: { marginTop: spacing.md, marginBottom: 2 },
@@ -89,5 +170,13 @@ const styles = StyleSheet.create({
   qrText: { fontWeight: '700', fontSize: 22, color: colors.navy },
   actions: { flexDirection: 'row', gap: spacing.md },
   button: { flex: 1 },
+  saveMessage: { color: colors.success, marginTop: spacing.md, textAlign: 'center' },
+  saveError: { color: colors.coralDark, marginBottom: spacing.md },
   signOutButton: { marginTop: spacing.md },
+  editCard: { width: '100%', maxWidth: 420, borderRadius: 24, padding: spacing.lg },
+  editTitle: { marginBottom: spacing.md },
+  inputLabel: { color: colors.navyMuted, marginTop: spacing.sm, marginBottom: spacing.xs },
+  input: { minHeight: 48, backgroundColor: colors.surfaceMuted, borderRadius: 12, paddingHorizontal: spacing.md, color: colors.navy },
+  bioInput: { minHeight: 96, paddingTop: spacing.md, textAlignVertical: 'top' },
+  editActions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg },
 });

@@ -14,6 +14,8 @@ const greetingText = () => {
   return 'Good evening';
 };
 
+const currentDateLabel = () => new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date()).toUpperCase();
+
 export default function HomeScreen() {
   const { user } = useAuth();
   const [profile, setProfile] = useState<{ firstName: string; avatarColor: string } | null>(null);
@@ -50,7 +52,7 @@ export default function HomeScreen() {
     <Screen>
       <View style={styles.header}>
         <View>
-          <Text variant="label" style={styles.eyebrow}>FRIDAY, SEPTEMBER 25</Text>
+          <Text variant="label" style={styles.eyebrow}>{currentDateLabel()}</Text>
           <Text variant="display" style={styles.greeting}>{greetingText()}, {profile?.firstName ?? 'there'}</Text>
         </View>
         <Avatar label={(profile?.firstName ?? 'W').slice(0, 1)} color={profile?.avatarColor ?? colors.navy} size={48} />
