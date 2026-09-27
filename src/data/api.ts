@@ -81,7 +81,15 @@ export async function getAvailability(profileId: string) {
 export async function getActivities() {
   const { data, error } = await supabase.from('interests').select('name').eq('kind', 'activity').order('name');
   if (error) throw error;
-  return (data as { name: string }[]).map((item) => item.name);
+
+  const normalizeActivityName = (name: string) => {
+    if (name === 'Fitness') return 'Workout';
+    if (name === 'Live music') return 'Music';
+    if (name === 'Something spontaneous') return 'Something Fun';
+    return name;
+  };
+
+  return (data as { name: string }[]).map((item) => normalizeActivityName(item.name));
 }
 
 export async function getLocations() {

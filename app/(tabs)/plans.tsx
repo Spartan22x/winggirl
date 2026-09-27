@@ -9,6 +9,14 @@ import { colors, radii, spacing } from '@/src/theme';
 
 const dateOptions = ['Thu, Sep 26 • 6:30 PM', 'Fri, Sep 27 • 7:15 PM', 'Sat, Sep 28 • 8:30 PM'];
 
+const normalizeActivityChoice = (activity?: string) => {
+  if (!activity) return activity;
+  if (activity === 'Fitness') return 'Workout';
+  if (activity === 'Live music') return 'Music';
+  if (activity === 'Something spontaneous') return 'Something Fun';
+  return activity;
+};
+
 const buildEmptyDraft = (location = '') => ({
   time: dateOptions[0],
   activity: 'Dinner',
@@ -29,7 +37,7 @@ export default function PlansScreen() {
   const [draft, setDraft] = useState(() => buildEmptyDraft());
   const userById = useMemo(() => new Map(users.map((profile) => [profile.id, profile])), [users]);
 
-  const activityParam = Array.isArray(params.activity) ? params.activity[0] : params.activity;
+  const activityParam = normalizeActivityChoice(Array.isArray(params.activity) ? params.activity[0] : params.activity);
   const inviteeParam = Array.isArray(params.invitee) ? params.invitee[0] : params.invitee;
 
   const resetDraft = (nextLocation = locations[0]?.name ?? '') => {
@@ -54,7 +62,7 @@ export default function PlansScreen() {
     if (!user) return;
     Promise.all([getPlans(user.id), getActivities(), getPublicProfiles(user.id), getLocations()]).then(([nextPlans, nextActivities, nextUsers, nextLocations]) => {
       setPlans(nextPlans);
-      setActivities(nextActivities);
+      setActivities(nextActivities.map((activity) => normalizeActivityChoice(activity) ?? activity));
       setUsers(nextUsers);
       setLocations(nextLocations);
       setDraft((current) => ({ ...current, location: current.location || nextLocations[0]?.name || '' }));
