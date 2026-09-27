@@ -109,15 +109,13 @@ export async function getPlans(profileId: string): Promise<PlanItem[]> {
   });
 }
 
-export async function createPlan(profileId: string, draft: { time: string; activity: string; invitees: string[]; location: string }) {
+export async function createPlan(profileId: string, draft: { time: string; activity: string; invitees: { profile_id: string; status: 'invited' }[]; location: string }) {
   const startsAt = new Date(`${draft.time.replace(' • ', ' ')}, ${new Date().getFullYear()}`).toISOString();
   const planId = randomUUID();
   const { error } = await supabase.from('plans').insert({ id: planId, host_id: profileId, title: `${draft.activity} with the girls`, starts_at: startsAt, activity: draft.activity, status: 'upcoming', location_name: draft.location });
   if (error) throw error;
   if (draft.invitees.length) {
-    const { data: invitees, error: inviteeError } = await supabase.from('profiles').select('id, first_name').in('first_name', draft.invitees);
-    if (inviteeError) throw inviteeError;
-    const { error: memberError } = await supabase.from('plan_members').insert((invitees as { id: string }[]).map((invitee) => ({ plan_id: planId, profile_id: invitee.id, status: 'invited' })));
+    const { error: memberError } = await supabase.from('plan_members').insert(draft.invitees.map((invitee) => ({ plan_id: planId, profile_id: invitee.profile_id, status: invitee.status })));
     if (memberError) throw memberError;
   }
   return { id: planId };
