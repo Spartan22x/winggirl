@@ -1,3 +1,4 @@
+import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { ActivityCard, BottomSheet, Card, EmptyState, PlanCard, PrimaryButton, Screen, SecondaryButton, SectionHeader, Text } from '@/src/components';
@@ -10,6 +11,7 @@ const dateOptions = ['Thu, Sep 26 • 6:30 PM', 'Fri, Sep 27 • 7:15 PM', 'Sat,
 
 export default function PlansScreen() {
   const { user } = useAuth();
+  const params = useLocalSearchParams<{ activity?: string | string[]; invitee?: string | string[] }>();
   const [plans, setPlans] = useState<PlanItem[]>([]);
   const [activities, setActivities] = useState<string[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -23,6 +25,9 @@ export default function PlansScreen() {
     location: '',
   });
 
+  const activityParam = Array.isArray(params.activity) ? params.activity[0] : params.activity;
+  const inviteeParam = Array.isArray(params.invitee) ? params.invitee[0] : params.invitee;
+
   useEffect(() => {
     if (!user) return;
     Promise.all([getPlans(user.id), getActivities(), getPublicProfiles(user.id), getLocations()]).then(([nextPlans, nextActivities, nextUsers, nextLocations]) => {
@@ -33,6 +38,16 @@ export default function PlansScreen() {
       setDraft((current) => ({ ...current, location: current.location || nextLocations[0]?.name || '' }));
     }).catch(() => undefined);
   }, [user]);
+
+  useEffect(() => {
+    if (!activityParam && !inviteeParam) return;
+    setSheetOpen(true);
+    setDraft((current) => ({
+      ...current,
+      activity: activityParam || current.activity,
+      invitees: inviteeParam ? Array.from(new Set([...(current.invitees || []), inviteeParam])) : current.invitees,
+    }));
+  }, [activityParam, inviteeParam]);
 
   const upcomingPlans = useMemo(() => plans.filter((plan) => plan.status === 'upcoming' || plan.status === 'joined'), [plans]);
   const invitations = useMemo(() => plans.filter((plan) => plan.status === 'invited'), [plans]);
