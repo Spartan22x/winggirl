@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Avatar, Card, EmptyState, PlanCard, PrimaryButton, Screen, SecondaryButton, SectionHeader, StatusPill, Text, UserCard } from '@/src/components';
 import { getAvailability, getPlans, getProfile, getPublicProfiles, setAvailability } from '@/src/data/api';
@@ -56,12 +57,16 @@ export default function HomeScreen() {
     }
   }, [user]);
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     void loadHomeData();
-  }, [loadHomeData]);
+  }, [loadHomeData]));
 
   const availableUsers = users.filter((nextUser) => nextUser.available);
-  const upcomingPlans = plans.filter((plan) => plan.status === 'upcoming' || plan.status === 'joined').slice(0, 2);
+  const upcomingPlans = plans.filter((plan) => {
+    const isUpcomingStatus = plan.status === 'upcoming' || plan.status === 'joined';
+    if (!isUpcomingStatus) return false;
+    return new Date(plan.startsAt).getTime() > Date.now();
+  }).slice(0, 2);
 
   const handlePlanShortcut = (activity: string, invitee?: string) => {
     router.push({

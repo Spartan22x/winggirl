@@ -113,7 +113,19 @@ export async function getPlans(profileId: string): Promise<PlanItem[]> {
   });
   return visiblePlans.filter((plan) => plan.host_id === profileId || membersByPlan.has(plan.id)).map((plan) => {
     const date = new Date(plan.starts_at);
-    return { id: plan.id, title: plan.title, date: date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }), time: date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }), activity: plan.activity, status: plan.status, attendees: membersByPlan.get(plan.id) ?? [], location: plan.location_name, host: plan.host_id === profileId ? 'You' : 'Wing', note: plan.note ?? '' };
+    return {
+      id: plan.id,
+      title: plan.title,
+      date: date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+      time: date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+      startsAt: plan.starts_at,
+      activity: plan.activity,
+      status: plan.status,
+      attendees: membersByPlan.get(plan.id) ?? [],
+      location: plan.location_name,
+      host: plan.host_id === profileId ? 'You' : 'Wing',
+      note: plan.note ?? '',
+    };
   });
 }
 

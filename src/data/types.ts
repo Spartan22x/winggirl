@@ -20,6 +20,7 @@ export type PlanItem = {
   title: string;
   date: string;
   time: string;
+  startsAt: string;
   activity: string;
   status: PlanStatus;
   attendees: string[];
