@@ -1,5 +1,6 @@
-import { useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { ActivityCard, BottomSheet, Card, EmptyState, Modal, PlanCard, PrimaryButton, Screen, SecondaryButton, SectionHeader, Text } from '@/src/components';
 import { createPlan, getActivities, getLocations, getPlans, getPublicProfiles, joinPlan } from '@/src/data/api';
@@ -26,7 +27,8 @@ const buildEmptyDraft = (location = '') => ({
 
 export default function PlansScreen() {
   const { user } = useAuth();
-  const params = useLocalSearchParams<{ activity?: string | string[]; invitee?: string | string[] }>();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ activity?: string | string[]; invitee?: string | string[]; composerRequestId?: string | string[] }>();
   const [plans, setPlans] = useState<PlanItem[]>([]);
   const [activities, setActivities] = useState<string[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -39,6 +41,7 @@ export default function PlansScreen() {
 
   const activityParam = normalizeActivityChoice(Array.isArray(params.activity) ? params.activity[0] : params.activity);
   const inviteeParam = Array.isArray(params.invitee) ? params.invitee[0] : params.invitee;
+  const composerRequestId = Array.isArray(params.composerRequestId) ? params.composerRequestId[0] : params.composerRequestId;
 
   const resetDraft = (nextLocation = locations[0]?.name ?? '') => {
     setDraft(buildEmptyDraft(nextLocation));
@@ -51,6 +54,17 @@ export default function PlansScreen() {
     resetDraft(locations[0]?.name ?? '');
   };
 
+  const startComposer = useCallback((activity = 'Dinner', inviteeId?: string) => {
+    setShowDiscardConfirm(false);
+    setStep(0);
+    setDraft({
+      ...buildEmptyDraft(locations[0]?.name ?? ''),
+      activity: normalizeActivityChoice(activity) ?? 'Dinner',
+      invitees: inviteeId ? [inviteeId] : [],
+    });
+    setSheetOpen(true);
+  }, [locations]);
+
   useEffect(() => {
     if (!locations.length) return;
     setDraft((current) => ({ ...current, location: current.location || locations[0]?.name || '' }));
@@ -58,28 +72,41 @@ export default function PlansScreen() {
 
   const hasMeaningfulDraft = draft.time !== dateOptions[0] || draft.activity !== 'Dinner' || draft.invitees.length > 0 || draft.location !== '';
 
-  useEffect(() => {
+  const loadPlansData = useCallback(async () => {
     if (!user) return;
-    Promise.all([getPlans(user.id), getActivities(), getPublicProfiles(user.id), getLocations()]).then(([nextPlans, nextActivities, nextUsers, nextLocations]) => {
-      setPlans(nextPlans);
-      setActivities(nextActivities.map((activity) => normalizeActivityChoice(activity) ?? activity));
-      setUsers(nextUsers);
-      setLocations(nextLocations);
-      setDraft((current) => ({ ...current, location: current.location || nextLocations[0]?.name || '' }));
-    }).catch(() => undefined);
+    const [nextPlans, nextActivities, nextUsers, nextLocations] = await Promise.all([
+      getPlans(user.id),
+      getActivities(),
+      getPublicProfiles(user.id),
+      getLocations(),
+    ]);
+
+    setPlans(nextPlans);
+    setActivities(nextActivities.map((activity) => normalizeActivityChoice(activity) ?? activity));
+    setUsers(nextUsers);
+    setLocations(nextLocations);
+    setDraft((current) => ({ ...current, location: current.location || nextLocations[0]?.name || '' }));
   }, [user]);
 
   useEffect(() => {
-    if (!activityParam && !inviteeParam) return;
-    setSheetOpen(true);
-    setDraft((current) => ({
-      ...current,
-      activity: activityParam || current.activity,
-      invitees: inviteeParam ? Array.from(new Set([...(current.invitees || []), inviteeParam])) : current.invitees,
-    }));
-  }, [activityParam, inviteeParam]);
+    void loadPlansData();
+  }, [loadPlansData]);
 
-  const upcomingPlans = useMemo(() => plans.filter((plan) => plan.status === 'upcoming' || plan.status === 'joined'), [plans]);
+  useFocusEffect(useCallback(() => {
+    void loadPlansData();
+  }, [loadPlansData]));
+
+  useEffect(() => {
+    if (!composerRequestId && !activityParam && !inviteeParam) return;
+    startComposer(activityParam, inviteeParam);
+    router.setParams({ activity: undefined, invitee: undefined, composerRequestId: undefined });
+  }, [activityParam, composerRequestId, inviteeParam, router, startComposer]);
+
+  const upcomingPlans = useMemo(() => plans.filter((plan) => {
+    const isEligibleStatus = plan.status === 'upcoming' || plan.status === 'joined';
+    if (!isEligibleStatus) return false;
+    return new Date(plan.startsAt).getTime() > Date.now();
+  }), [plans]);
   const invitations = useMemo(() => plans.filter((plan) => plan.status === 'invited'), [plans]);
   const pastPlans = useMemo(() => plans.filter((plan) => plan.status === 'past'), [plans]);
 
@@ -201,7 +228,7 @@ export default function PlansScreen() {
       <Text variant="label" style={styles.eyebrow}>MAKE IT HAPPEN</Text>
       <Text variant="display">Plans</Text>
       <Text style={styles.intro}>The good stuff happens when someone makes the first move.</Text>
-      <PrimaryButton label="Create a plan" onPress={() => setSheetOpen(true)} style={styles.button} />
+      <PrimaryButton label="Create a plan" onPress={() => startComposer()} style={styles.button} />
 
       <SectionHeader title="Upcoming" action="THIS WEEK" />
       {upcomingPlans.length > 0 ? upcomingPlans.map((plan) => (

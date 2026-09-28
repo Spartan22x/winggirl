@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { randomUUID } from 'expo-crypto';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -68,12 +69,13 @@ export default function HomeScreen() {
     return new Date(plan.startsAt).getTime() > Date.now();
   }).slice(0, 2);
 
-  const handlePlanShortcut = (activity: string, invitee?: string) => {
+  const handlePlanShortcut = (activity: string, inviteeId?: string) => {
     router.push({
       pathname: '/(tabs)/plans',
       params: {
         activity,
-        ...(invitee ? { invitee } : {}),
+        ...(inviteeId ? { invitee: inviteeId } : {}),
+        composerRequestId: randomUUID(),
       },
     });
   };
@@ -169,7 +171,7 @@ export default function HomeScreen() {
               interests={availableUser.interests}
               available={availableUser.available}
               avatarColor={availableUser.avatarColor}
-              onPress={() => handlePlanShortcut(availableUser.activity || 'Dinner', availableUser.firstName)}
+              onPress={() => handlePlanShortcut(availableUser.activity || 'Dinner', availableUser.id)}
             />
           ))}
         </ScrollView>
