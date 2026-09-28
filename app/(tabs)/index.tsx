@@ -3,7 +3,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { Avatar, Card, EmptyState, PlanCard, PrimaryButton, Screen, SecondaryButton, SectionHeader, StatusPill, Text, UserCard } from '@/src/components';
+import { Avatar, Card, EmptyState, PlanCard, PrimaryButton, Screen, SectionHeader, StatusPill, Text, UserCard } from '@/src/components';
 import { getAvailability, getPlans, getProfile, getPublicProfiles, setAvailability } from '@/src/data/api';
 import type { PlanItem, UserProfile } from '@/src/data/types';
 import { useAuth } from '@/src/auth/AuthProvider';
@@ -121,10 +121,14 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.toggleRow}>
-          <Text variant="title" style={styles.cardTitle}>{isAvailable ? 'You\'re free tonight' : 'I\'m free tonight'}</Text>
+          <Text variant="title" style={styles.cardTitle}>{isAvailable ? 'You\'re available tonight' : 'You\'re not available tonight'}</Text>
           <Pressable
             accessibilityRole="switch"
-            accessibilityLabel={isAvailable ? 'Turn off availability' : 'Turn on availability'}
+            accessibilityLabel="Available to hang out tonight"
+            accessibilityState={{ checked: isAvailable, disabled: isUpdatingAvailability }}
+            accessibilityValue={{ text: isAvailable ? 'On, available tonight' : 'Off, not available tonight' }}
+            aria-checked={isAvailable}
+            aria-valuetext={isAvailable ? 'On, available tonight' : 'Off, not available tonight'}
             disabled={isUpdatingAvailability}
             onPress={toggleAvailability}
             style={[styles.switch, isAvailable && styles.switchOn, isUpdatingAvailability && styles.switchDisabled]}
@@ -133,15 +137,8 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        <Text style={styles.cardBody}>{isAvailable ? 'Your WingGirls can see you\'re free tonight.' : 'Keep your evening flexible and let people know when you are free.'}</Text>
+        <Text style={styles.cardBody}>{isAvailable ? 'Your WingGirls can see you\'re free.' : 'Turn on availability when you\'d like to make plans.'}</Text>
         <Text style={styles.countText}>{availableUsers.length} WingGirls are available</Text>
-
-        <View style={styles.primaryActions}>
-          <PrimaryButton label={isAvailable ? 'You\'re free tonight' : 'I\'m free tonight'} onPress={toggleAvailability} disabled={isUpdatingAvailability} style={styles.cardButton} />
-          {isAvailable ? (
-            <SecondaryButton label="I\'m not free anymore" onPress={toggleAvailability} style={styles.secondaryButton} />
-          ) : null}
-        </View>
       </Card>
 
       <SectionHeader title="Who’s free tonight" action="TONIGHT" />
@@ -160,7 +157,6 @@ export default function HomeScreen() {
       ) : availableUsers.length === 0 ? (
         <View style={styles.emptyWrap}>
           <EmptyState title="No WingGirls are free yet." message="Your friends may be waiting for someone to make the first move." icon="✦" />
-          <PrimaryButton label="I’m free tonight" onPress={toggleAvailability} style={styles.emptyAction} />
         </View>
       ) : (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalList} contentContainerStyle={styles.listContent}>
@@ -232,9 +228,6 @@ const styles = StyleSheet.create({
   switchDisabled: { opacity: 0.6 },
   switchThumb: { width: 22, height: 22, borderRadius: 999, backgroundColor: colors.white, alignSelf: 'flex-start' },
   switchThumbOn: { alignSelf: 'flex-end' },
-  primaryActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flexWrap: 'wrap' },
-  cardButton: { flex: 1, minWidth: 180 },
-  secondaryButton: { minWidth: 124 },
   loadingCard: { backgroundColor: colors.surface, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, padding: spacing.xl, alignItems: 'center', marginBottom: spacing.xl },
   loadingText: { marginTop: spacing.md, color: colors.navyMuted },
   errorCard: { backgroundColor: colors.surface, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, padding: spacing.lg, marginBottom: spacing.xl },
