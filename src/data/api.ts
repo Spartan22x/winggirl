@@ -129,8 +129,8 @@ export async function getPlans(profileId: string): Promise<PlanItem[]> {
   });
 }
 
-export async function createPlan(profileId: string, draft: { time: string; activity: string; invitees: { profile_id: string; status: 'invited' }[]; location: string }) {
-  const startsAt = new Date(`${draft.time.replace(' • ', ' ')}, ${new Date().getFullYear()}`).toISOString();
+export async function createPlan(profileId: string, draft: { startsAt: string; activity: string; invitees: { profile_id: string; status: 'invited' }[]; location: string }) {
+  const startsAt = new Date(draft.startsAt).toISOString();
   const planId = randomUUID();
   const { error } = await supabase.from('plans').insert({ id: planId, host_id: profileId, title: `${draft.activity} with the girls`, starts_at: startsAt, activity: draft.activity, status: 'upcoming', location_name: draft.location });
   if (error) throw error;

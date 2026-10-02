@@ -1,5 +1,5 @@
 import { PropsWithChildren, useEffect, useRef } from 'react';
-import { Animated, Modal, Pressable, StyleSheet, View } from 'react-native';
+import { Animated, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { colors, spacing } from '@/src/theme';
 
 type BottomSheetProps = PropsWithChildren<{ visible: boolean; onClose: () => void; title?: string; }>; 
@@ -8,6 +8,7 @@ export function BottomSheet({ visible, onClose, title, children }: BottomSheetPr
   const translateY = useRef(new Animated.Value(300)).current;
 
   useEffect(() => {
+    if (Platform.OS === 'web') return;
     Animated.spring(translateY, {
       toValue: visible ? 0 : 300,
       useNativeDriver: true,
@@ -19,7 +20,7 @@ export function BottomSheet({ visible, onClose, title, children }: BottomSheetPr
   return (
     <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} />
-      <Animated.View style={[styles.sheet, { transform: [{ translateY }] }]}>
+      <Animated.View style={[styles.sheet, { transform: [{ translateY: Platform.OS === 'web' ? 0 : translateY }] }]}>
         <View style={styles.handle} />
         {title ? <View style={styles.header} /> : null}
         {children}

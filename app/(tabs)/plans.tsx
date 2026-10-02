@@ -1,14 +1,13 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { ActivityCard, BottomSheet, Card, EmptyState, Modal, PlanCard, PrimaryButton, Screen, SecondaryButton, SectionHeader, Text } from '@/src/components';
 import { createPlan, getActivities, getLocations, getPlans, getPublicProfiles, joinPlan } from '@/src/data/api';
 import type { PlanItem, UserProfile } from '@/src/data/types';
 import { useAuth } from '@/src/auth/AuthProvider';
+import { getPlanDateTimeOptions } from '@/src/lib/planDateTime';
 import { colors, radii, spacing } from '@/src/theme';
-
-const dateOptions = ['Thu, Sep 26 • 6:30 PM', 'Fri, Sep 27 • 7:15 PM', 'Sat, Sep 28 • 8:30 PM'];
 
 const normalizeActivityChoice = (activity?: string) => {
   if (!activity) return activity;
@@ -18,8 +17,9 @@ const normalizeActivityChoice = (activity?: string) => {
   return activity;
 };
 
-const buildEmptyDraft = (location = '') => ({
-  time: dateOptions[0],
+const buildEmptyDraft = (location = '', defaultDateTime = getPlanDateTimeOptions()[0]) => ({
+  time: defaultDateTime.label,
+  startsAt: defaultDateTime.startsAt,
   activity: 'Dinner',
   invitees: [] as string[],
   location,
@@ -33,10 +33,11 @@ export default function PlansScreen() {
   const [activities, setActivities] = useState<string[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [locations, setLocations] = useState<{ name: string; area: string; vibe: string; note: string }[]>([]);
+  const [dateTimeOptions, setDateTimeOptions] = useState(() => getPlanDateTimeOptions());
   const [sheetOpen, setSheetOpen] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [step, setStep] = useState(0);
-  const [draft, setDraft] = useState(() => buildEmptyDraft());
+  const [draft, setDraft] = useState(() => buildEmptyDraft('', dateTimeOptions[0]));
   const userById = useMemo(() => new Map(users.map((profile) => [profile.id, profile])), [users]);
 
   const activityParam = normalizeActivityChoice(Array.isArray(params.activity) ? params.activity[0] : params.activity);
@@ -44,7 +45,9 @@ export default function PlansScreen() {
   const composerRequestId = Array.isArray(params.composerRequestId) ? params.composerRequestId[0] : params.composerRequestId;
 
   const resetDraft = (nextLocation = locations[0]?.name ?? '') => {
-    setDraft(buildEmptyDraft(nextLocation));
+    const nextOptions = getPlanDateTimeOptions();
+    setDateTimeOptions(nextOptions);
+    setDraft(buildEmptyDraft(nextLocation, nextOptions[0]));
   };
 
   const closeComposer = () => {
@@ -55,10 +58,12 @@ export default function PlansScreen() {
   };
 
   const startComposer = useCallback((activity = 'Dinner', inviteeId?: string) => {
+    const nextOptions = getPlanDateTimeOptions();
+    setDateTimeOptions(nextOptions);
     setShowDiscardConfirm(false);
     setStep(0);
     setDraft({
-      ...buildEmptyDraft(locations[0]?.name ?? ''),
+      ...buildEmptyDraft(locations[0]?.name ?? '', nextOptions[0]),
       activity: normalizeActivityChoice(activity) ?? 'Dinner',
       invitees: inviteeId ? [inviteeId] : [],
     });
@@ -70,7 +75,7 @@ export default function PlansScreen() {
     setDraft((current) => ({ ...current, location: current.location || locations[0]?.name || '' }));
   }, [locations]);
 
-  const hasMeaningfulDraft = draft.time !== dateOptions[0] || draft.activity !== 'Dinner' || draft.invitees.length > 0 || draft.location !== '';
+  const hasMeaningfulDraft = draft.startsAt !== dateTimeOptions[0]?.startsAt || draft.activity !== 'Dinner' || draft.invitees.length > 0 || draft.location !== '';
 
   const loadPlansData = useCallback(async () => {
     if (!user) return;
@@ -128,7 +133,7 @@ export default function PlansScreen() {
   const handleCreatePlan = async () => {
     if (!user) return;
     const selectedInvitees = draft.invitees.map((profileId) => ({ profile_id: profileId, status: 'invited' as const }));
-    await createPlan(user.id, { ...draft, invitees: selectedInvitees });
+    await createPlan(user.id, { startsAt: draft.startsAt, activity: draft.activity, invitees: selectedInvitees, location: draft.location });
     setPlans(await getPlans(user.id));
     closeComposer();
   };
@@ -144,13 +149,13 @@ export default function PlansScreen() {
       return (
         <View>
           <Text variant="title" style={styles.sheetTitle}>Choose a date and time</Text>
-          <View style={styles.grid}>
-            {dateOptions.map((option) => (
-              <Pressable key={option} onPress={() => setDraft((current) => ({ ...current, time: option }))} style={[styles.optionCard, draft.time === option && styles.optionSelected]}>
-                <Text variant="title" style={[styles.optionText, draft.time === option && styles.optionSelectedText]}>{option}</Text>
+          <ScrollView style={styles.dateOptionsScroll} contentContainerStyle={styles.grid} showsVerticalScrollIndicator>
+            {dateTimeOptions.map((option) => (
+              <Pressable key={option.startsAt} onPress={() => setDraft((current) => ({ ...current, time: option.label, startsAt: option.startsAt }))} style={[styles.optionCard, draft.startsAt === option.startsAt && styles.optionSelected]}>
+                <Text variant="title" style={[styles.optionText, draft.startsAt === option.startsAt && styles.optionSelectedText]}>{option.label}</Text>
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
         </View>
       );
     }
@@ -275,6 +280,7 @@ const styles = StyleSheet.create({
   intro: { marginTop: spacing.sm, marginBottom: spacing.lg },
   button: { alignSelf: 'flex-start', marginBottom: spacing.xl },
   grid: { gap: spacing.md },
+  dateOptionsScroll: { maxHeight: 340 },
   activityGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
   optionCard: { backgroundColor: colors.surface, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md },
   optionSelected: { backgroundColor: colors.coralSoft, borderColor: colors.coral },
