@@ -1,6 +1,6 @@
 import { randomUUID } from 'expo-crypto';
 import { supabase } from '@/src/lib/supabase';
-import type { Conversation, Message, PlanItem, UserProfile } from './types';
+import type { Conversation, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanParticipant, UserProfile } from './types';
 
 type ProfileRow = { id: string; first_name: string; age: number | null; bio: string | null; avatar_color: string };
 type AvailabilityRow = { profile_id: string; is_available: boolean };
@@ -107,12 +107,20 @@ export async function getPlans(profileId: string): Promise<PlanItem[]> {
     ? await supabase.from('plan_members').select('plan_id, profile_id, status, profiles(first_name)').in('plan_id', planIds)
     : { data: [], error: null };
   if (membersError) throw membersError;
-  const membersByPlan = new Map<string, string[]>();
-  (members as unknown as { plan_id: string; profile_id: string; profiles: { first_name: string } | null }[]).forEach((member) => {
-    membersByPlan.set(member.plan_id, [...(membersByPlan.get(member.plan_id) ?? []), member.profiles?.first_name ?? member.profile_id]);
+  const membersByPlan = new Map<string, { profileId: string; firstName: string; status: PlanMemberStatus }[]>();
+  (members as unknown as { plan_id: string; profile_id: string; status: PlanMemberStatus; profiles: { first_name: string } | null }[]).forEach((member) => {
+    membersByPlan.set(member.plan_id, [...(membersByPlan.get(member.plan_id) ?? []), { profileId: member.profile_id, firstName: member.profiles?.first_name ?? 'Participant', status: member.status }]);
   });
   return visiblePlans.filter((plan) => plan.host_id === profileId || membersByPlan.has(plan.id)).map((plan) => {
     const date = new Date(plan.starts_at);
+    const membersForPlan = membersByPlan.get(plan.id) ?? [];
+    const participants: PlanParticipant[] = membersForPlan.map((member) => ({
+      profileId: member.profileId,
+      firstName: member.firstName,
+      age: null,
+      avatarColor: '#172535',
+      status: member.status,
+    }));
     return {
       id: plan.id,
       title: plan.title,
@@ -121,7 +129,11 @@ export async function getPlans(profileId: string): Promise<PlanItem[]> {
       startsAt: plan.starts_at,
       activity: plan.activity,
       status: plan.status,
-      attendees: membersByPlan.get(plan.id) ?? [],
+      hostId: plan.host_id,
+      isHost: plan.host_id === profileId,
+      currentUserStatus: membersForPlan.find((member) => member.profileId === profileId)?.status ?? null,
+      participants,
+      attendees: participants.filter((member) => member.status !== 'declined').map((member) => member.firstName),
       location: plan.location_name,
       host: plan.host_id === profileId ? 'You' : 'Wing',
       note: plan.note ?? '',
@@ -129,10 +141,63 @@ export async function getPlans(profileId: string): Promise<PlanItem[]> {
   });
 }
 
-export async function createPlan(profileId: string, draft: { startsAt: string; activity: string; invitees: { profile_id: string; status: 'invited' }[]; location: string }) {
+export async function getPlanDetails(planId: string, profileId: string): Promise<PlanDetails | null> {
+  const { data: plan, error: planError } = await supabase
+    .from('plans')
+    .select('id, host_id, title, starts_at, activity, status, location_name, note')
+    .eq('id', planId)
+    .maybeSingle();
+  if (planError) throw planError;
+  if (!plan) return null;
+
+  const [{ data: host, error: hostError }, { data: members, error: membersError }] = await Promise.all([
+    supabase.from('profiles').select('id, first_name, age, bio, avatar_color').eq('id', plan.host_id).maybeSingle(),
+    supabase.from('plan_members').select('profile_id, status, profiles(first_name, age, avatar_color)').eq('plan_id', planId),
+  ]);
+  if (hostError) throw hostError;
+  if (membersError) throw membersError;
+
+  const participantRows = members as unknown as { profile_id: string; status: PlanMemberStatus; profiles: { first_name: string; age: number | null; avatar_color: string } | null }[];
+  const participants: PlanParticipant[] = participantRows.map((member) => ({
+    profileId: member.profile_id,
+    firstName: member.profiles?.first_name ?? 'Participant',
+    age: member.profiles?.age ?? null,
+    avatarColor: member.profiles?.avatar_color ?? '#172535',
+    status: member.status,
+  }));
+  const date = new Date(plan.starts_at);
+  const isHost = plan.host_id === profileId;
+
+  return {
+    id: plan.id,
+    title: plan.title,
+    date: date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+    time: date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+    startsAt: plan.starts_at,
+    activity: plan.activity,
+    status: plan.status,
+    hostId: plan.host_id,
+    isHost,
+    currentUserStatus: participantRows.find((member) => member.profile_id === profileId)?.status ?? null,
+    participants,
+    attendees: participants.filter((member) => member.status !== 'declined').map((member) => member.firstName),
+    location: plan.location_name,
+    host: isHost ? 'You' : host?.first_name ?? 'Host',
+    note: plan.note ?? '',
+    hostProfile: host ? {
+      id: host.id,
+      firstName: host.first_name,
+      age: host.age,
+      bio: host.bio ?? '',
+      avatarColor: host.avatar_color,
+    } : null,
+  };
+}
+
+export async function createPlan(profileId: string, draft: { startsAt: string; activity: string; invitees: { profile_id: string; status: 'invited' }[]; location: string; note?: string }) {
   const startsAt = new Date(draft.startsAt).toISOString();
   const planId = randomUUID();
-  const { error } = await supabase.from('plans').insert({ id: planId, host_id: profileId, title: `${draft.activity} with the girls`, starts_at: startsAt, activity: draft.activity, status: 'upcoming', location_name: draft.location });
+  const { error } = await supabase.from('plans').insert({ id: planId, host_id: profileId, title: `${draft.activity} with the girls`, starts_at: startsAt, activity: draft.activity, status: 'upcoming', location_name: draft.location, note: draft.note?.trim() || null });
   if (error) throw error;
   if (draft.invitees.length) {
     const { error: memberError } = await supabase.from('plan_members').insert(draft.invitees.map((invitee) => ({ plan_id: planId, profile_id: invitee.profile_id, status: invitee.status })));
@@ -142,8 +207,33 @@ export async function createPlan(profileId: string, draft: { startsAt: string; a
 }
 
 export async function joinPlan(planId: string, profileId: string) {
-  const { error } = await supabase.from('plan_members').upsert({ plan_id: planId, profile_id: profileId, status: 'joined' });
+  const { data, error } = await supabase.from('plan_members').update({ status: 'joined' }).eq('plan_id', planId).eq('profile_id', profileId).eq('status', 'invited').select('plan_id').maybeSingle();
   if (error) throw error;
+  if (!data) throw new Error('This invitation is no longer available.');
+}
+
+export async function leavePlan(planId: string, profileId: string) {
+  const { count, error } = await supabase.from('plan_members').delete({ count: 'exact' }).eq('plan_id', planId).eq('profile_id', profileId).eq('status', 'joined');
+  if (error) throw error;
+  if (!count) throw new Error('You are not participating in this plan.');
+}
+
+export async function updatePlan(planId: string, hostId: string, changes: { title: string; startsAt: string; activity: string; location: string; note: string }) {
+  const { data, error } = await supabase.from('plans').update({
+    title: changes.title.trim(),
+    starts_at: new Date(changes.startsAt).toISOString(),
+    activity: changes.activity,
+    location_name: changes.location,
+    note: changes.note.trim() || null,
+  }).eq('id', planId).eq('host_id', hostId).in('status', ['upcoming', 'invited', 'joined']).gt('starts_at', new Date().toISOString()).select('id').maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('Only the host can edit an active upcoming plan.');
+}
+
+export async function cancelPlan(planId: string, hostId: string) {
+  const { data, error } = await supabase.from('plans').update({ status: 'cancelled' }).eq('id', planId).eq('host_id', hostId).in('status', ['upcoming', 'invited', 'joined']).gt('starts_at', new Date().toISOString()).select('id').maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('Only the host can cancel an active upcoming plan.');
 }
 
 export async function getConversations(profileId: string): Promise<Conversation[]> {

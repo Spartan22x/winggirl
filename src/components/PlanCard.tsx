@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, View } from 'react-native';
+import type { PlanMemberStatus, PlanStatus } from '@/src/data/types';
 import { colors, radii, spacing } from '@/src/theme';
 import { Text } from './Text';
 
@@ -9,26 +10,37 @@ type PlanCardProps = {
   activity: string;
   location: string;
   attendees: string[];
-  status: 'upcoming' | 'invited' | 'past' | 'joined';
-  onJoin?: () => void;
+  status: PlanStatus;
+  membershipStatus?: PlanMemberStatus | null;
+  isHost?: boolean;
   onPress?: () => void;
 };
 
-export function PlanCard({ title, date, time, activity, location, attendees, status, onJoin, onPress }: PlanCardProps) {
+export function PlanCard({ title, date, time, activity, location, attendees, status, membershipStatus, isHost = false, onPress }: PlanCardProps) {
+  const statusLabel = status === 'cancelled'
+    ? 'Cancelled'
+    : status === 'past'
+      ? 'Past'
+      : membershipStatus === 'invited'
+        ? 'Invitation'
+        : isHost
+          ? 'Hosting'
+          : membershipStatus === 'joined'
+            ? 'Joined'
+            : status === 'invited'
+              ? 'Invitation'
+              : 'Upcoming';
+
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
+    <Pressable accessibilityRole={onPress ? 'button' : undefined} onPress={onPress} style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
       <View style={styles.headerRow}>
         <View style={styles.activityBadge}><Text variant="label" style={styles.activityText}>{activity}</Text></View>
-        <Text variant="label" style={[styles.status, status === 'invited' ? styles.invited : status === 'past' ? styles.past : styles.upcoming]}>{status === 'invited' ? 'Invitation' : status === 'past' ? 'Past' : status === 'joined' ? 'Joined' : 'Upcoming'}</Text>
+        <Text variant="label" style={[styles.status, status === 'invited' || membershipStatus === 'invited' ? styles.invited : status === 'past' ? styles.past : status === 'cancelled' ? styles.cancelled : styles.upcoming]}>{statusLabel}</Text>
       </View>
       <Text variant="title" style={styles.title}>{title}</Text>
       <Text style={styles.meta}>{date} • {time}</Text>
       <Text style={styles.meta}>{location}</Text>
-      <Text style={styles.meta}>With {attendees.join(', ')}</Text>
-
-      {status === 'invited' ? (
-        <Pressable onPress={onJoin} style={styles.joinButton}><Text variant="label" style={styles.joinText}>Join plan</Text></Pressable>
-      ) : null}
+      <Text style={styles.meta}>{attendees.length ? `With ${attendees.join(', ')}` : 'No participants yet'}</Text>
     </Pressable>
   );
 }
@@ -42,9 +54,8 @@ const styles = StyleSheet.create({
   status: { fontSize: 10, textTransform: 'uppercase' },
   invited: { color: colors.coralDark },
   past: { color: colors.inkSoft },
+  cancelled: { color: colors.coralDark },
   upcoming: { color: colors.success },
   title: { marginBottom: 4 },
   meta: { color: colors.navyMuted, marginTop: 4 },
-  joinButton: { marginTop: spacing.md, backgroundColor: colors.navy, borderRadius: radii.pill, paddingVertical: spacing.sm, alignItems: 'center' },
-  joinText: { color: colors.white },
 });

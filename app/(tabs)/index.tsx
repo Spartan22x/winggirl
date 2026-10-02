@@ -64,9 +64,9 @@ export default function HomeScreen() {
 
   const availableUsers = users.filter((nextUser) => nextUser.available);
   const upcomingPlans = plans.filter((plan) => {
-    const isUpcomingStatus = plan.status === 'upcoming' || plan.status === 'joined';
-    if (!isUpcomingStatus) return false;
-    return new Date(plan.startsAt).getTime() > Date.now();
+    const isActiveStatus = plan.status === 'upcoming' || plan.status === 'invited' || plan.status === 'joined';
+    const isParticipating = plan.isHost || plan.currentUserStatus === 'joined';
+    return isActiveStatus && isParticipating && new Date(plan.startsAt).getTime() > Date.now();
   }).slice(0, 2);
 
   const handlePlanShortcut = (activity: string, inviteeId?: string) => {
@@ -198,7 +198,9 @@ export default function HomeScreen() {
             location={plan.location}
             attendees={plan.attendees}
             status={plan.status}
-            onPress={() => handlePlanShortcut(plan.activity)}
+            membershipStatus={plan.currentUserStatus}
+            isHost={plan.isHost}
+            onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })}
           />
         ))
       ) : (

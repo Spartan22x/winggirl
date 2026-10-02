@@ -6,14 +6,14 @@
 2. Select an organization, enter a project name, choose a strong database password, and select a region.
 3. Wait for the project to finish provisioning.
 
-## 2. Apply the database migration
+## 2. Apply the database migrations
 
-1. Open **SQL Editor** in the Supabase dashboard.
-2. Create a new query.
-3. Paste the contents of `supabase/migrations/202609250001_winggirl_schema.sql`.
-4. Select **Run** and confirm that the query completes without errors.
+1. Apply the SQL files in `supabase/migrations/` in timestamp order, once each.
+2. For a new project, run `202609250001_winggirl_schema.sql` first, then the later migration files.
+3. The `202610020001_plan_participation_and_cancellation.sql` migration adds the cancelled status and tightens plan-member policies. It must be applied before using host cancellation or the updated membership actions.
+4. In CLI-managed environments, link the project and run `supabase db push` instead. Do not run a migration twice against the same database.
 
-For CLI-managed environments, link the project and run `supabase db push` instead. Do not run the migration twice against the same database.
+For SQL Editor setup, open **SQL Editor**, create a query for each file, paste its contents, and select **Run** in timestamp order.
 
 ## 3. Configure authentication
 

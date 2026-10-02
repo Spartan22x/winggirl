@@ -13,7 +13,16 @@ export type UserProfile = {
   friendsOfFriends: boolean;
 };
 
-export type PlanStatus = 'upcoming' | 'invited' | 'past' | 'joined';
+export type PlanStatus = 'upcoming' | 'invited' | 'past' | 'joined' | 'cancelled';
+export type PlanMemberStatus = 'invited' | 'joined' | 'declined';
+
+export type PlanParticipant = {
+  profileId: string;
+  firstName: string;
+  age: number | null;
+  avatarColor: string;
+  status: PlanMemberStatus;
+};
 
 export type PlanItem = {
   id: string;
@@ -23,10 +32,24 @@ export type PlanItem = {
   startsAt: string;
   activity: string;
   status: PlanStatus;
+  hostId: string;
+  isHost: boolean;
+  currentUserStatus: PlanMemberStatus | null;
+  participants: PlanParticipant[];
   attendees: string[];
   location: string;
   host: string;
   note: string;
+};
+
+export type PlanDetails = PlanItem & {
+  hostProfile: {
+    id: string;
+    firstName: string;
+    age: number | null;
+    bio: string;
+    avatarColor: string;
+  } | null;
 };
 
 export type Message = {

@@ -1,9 +1,9 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { ActivityCard, BottomSheet, Card, EmptyState, Modal, PlanCard, PrimaryButton, Screen, SecondaryButton, SectionHeader, Text } from '@/src/components';
-import { createPlan, getActivities, getLocations, getPlans, getPublicProfiles, joinPlan } from '@/src/data/api';
+import { createPlan, getActivities, getLocations, getPlans, getPublicProfiles } from '@/src/data/api';
 import type { PlanItem, UserProfile } from '@/src/data/types';
 import { useAuth } from '@/src/auth/AuthProvider';
 import { getPlanDateTimeOptions } from '@/src/lib/planDateTime';
@@ -23,6 +23,7 @@ const buildEmptyDraft = (location = '', defaultDateTime = getPlanDateTimeOptions
   activity: 'Dinner',
   invitees: [] as string[],
   location,
+  note: '',
 });
 
 export default function PlansScreen() {
@@ -75,7 +76,7 @@ export default function PlansScreen() {
     setDraft((current) => ({ ...current, location: current.location || locations[0]?.name || '' }));
   }, [locations]);
 
-  const hasMeaningfulDraft = draft.startsAt !== dateTimeOptions[0]?.startsAt || draft.activity !== 'Dinner' || draft.invitees.length > 0 || draft.location !== '';
+  const hasMeaningfulDraft = draft.startsAt !== dateTimeOptions[0]?.startsAt || draft.activity !== 'Dinner' || draft.invitees.length > 0 || draft.location !== '' || draft.note !== '';
 
   const loadPlansData = useCallback(async () => {
     if (!user) return;
@@ -108,12 +109,15 @@ export default function PlansScreen() {
   }, [activityParam, composerRequestId, inviteeParam, router, startComposer]);
 
   const upcomingPlans = useMemo(() => plans.filter((plan) => {
-    const isEligibleStatus = plan.status === 'upcoming' || plan.status === 'joined';
-    if (!isEligibleStatus) return false;
-    return new Date(plan.startsAt).getTime() > Date.now();
+    const isEligibleStatus = plan.status === 'upcoming' || plan.status === 'invited' || plan.status === 'joined';
+    const isParticipating = plan.isHost || plan.currentUserStatus === 'joined';
+    return isEligibleStatus && isParticipating && new Date(plan.startsAt).getTime() > Date.now();
   }), [plans]);
-  const invitations = useMemo(() => plans.filter((plan) => plan.status === 'invited'), [plans]);
-  const pastPlans = useMemo(() => plans.filter((plan) => plan.status === 'past'), [plans]);
+  const invitations = useMemo(() => plans.filter((plan) => {
+    const isEligibleStatus = plan.status === 'upcoming' || plan.status === 'invited' || plan.status === 'joined';
+    return isEligibleStatus && plan.currentUserStatus === 'invited' && new Date(plan.startsAt).getTime() > Date.now();
+  }), [plans]);
+  const pastPlans = useMemo(() => plans.filter((plan) => plan.status === 'past' || plan.status === 'cancelled' || new Date(plan.startsAt).getTime() <= Date.now()), [plans]);
 
   const advanceStep = () => setStep((value) => Math.min(value + 1, 5));
   const previousStep = () => setStep((value) => Math.max(value - 1, 0));
@@ -133,15 +137,9 @@ export default function PlansScreen() {
   const handleCreatePlan = async () => {
     if (!user) return;
     const selectedInvitees = draft.invitees.map((profileId) => ({ profile_id: profileId, status: 'invited' as const }));
-    await createPlan(user.id, { startsAt: draft.startsAt, activity: draft.activity, invitees: selectedInvitees, location: draft.location });
+    await createPlan(user.id, { startsAt: draft.startsAt, activity: draft.activity, invitees: selectedInvitees, location: draft.location, note: draft.note });
     setPlans(await getPlans(user.id));
     closeComposer();
-  };
-
-  const handleJoinPlan = async (planId: string) => {
-    if (!user) return;
-    await joinPlan(planId, user.id);
-    setPlans(await getPlans(user.id));
   };
 
   const renderDraftStep = () => {
@@ -201,14 +199,15 @@ export default function PlansScreen() {
       return (
         <View>
           <Text variant="title" style={styles.sheetTitle}>Pick a location</Text>
-          <View style={styles.grid}>
+          <ScrollView style={styles.locationOptionsScroll} contentContainerStyle={styles.grid} showsVerticalScrollIndicator>
             {locations.map((location) => (
               <Pressable key={location.name} onPress={() => setDraft((current) => ({ ...current, location: location.name }))} style={[styles.locationCard, draft.location === location.name && styles.optionSelected]}>
                 <Text variant="title" style={[styles.locationTitle, draft.location === location.name && styles.optionSelectedText]}>{location.name}</Text>
                 <Text style={styles.locationMeta}>{location.area} • {location.vibe}</Text>
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
+          <TextInput value={draft.note} onChangeText={(note) => setDraft((current) => ({ ...current, note }))} placeholder="Add a description (optional)" multiline maxLength={1000} style={[styles.descriptionInput, styles.noteInput]} />
         </View>
       );
     }
@@ -223,6 +222,7 @@ export default function PlansScreen() {
           <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Activity:</Text> {draft.activity}</Text>
           <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Invitees:</Text> {selectedInvitees.join(', ') || 'Nobody yet'}</Text>
           <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Location:</Text> {draft.location}</Text>
+          {draft.note ? <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Description:</Text> {draft.note}</Text> : null}
         </Card>
       </View>
     );
@@ -237,17 +237,17 @@ export default function PlansScreen() {
 
       <SectionHeader title="Upcoming" action="THIS WEEK" />
       {upcomingPlans.length > 0 ? upcomingPlans.map((plan) => (
-        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} onJoin={() => handleJoinPlan(plan.id)} />
+        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} membershipStatus={plan.currentUserStatus} isHost={plan.isHost} onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })} />
       )) : <EmptyState title="Nothing on the calendar yet" message="Start with something easy: coffee, a walk, or a spontaneous yes." icon="✦" /> }
 
       <SectionHeader title="Invitations" action="NEW" />
       {invitations.length > 0 ? invitations.map((plan) => (
-        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} onJoin={() => handleJoinPlan(plan.id)} />
+        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} membershipStatus={plan.currentUserStatus} isHost={plan.isHost} onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })} />
       )) : <EmptyState title="No invites yet" message="Your best plans are still waiting to be made." icon="✦" /> }
 
       <SectionHeader title="Past plans" action="ARCHIVE" />
       {pastPlans.length > 0 ? pastPlans.map((plan) => (
-        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} />
+        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} membershipStatus={plan.currentUserStatus} isHost={plan.isHost} onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })} />
       )) : <EmptyState title="No past plans" message="Your favorite catch-ups will land here." icon="✦" /> }
 
       <BottomSheet visible={sheetOpen} onClose={handleCancelRequest}>
@@ -281,11 +281,14 @@ const styles = StyleSheet.create({
   button: { alignSelf: 'flex-start', marginBottom: spacing.xl },
   grid: { gap: spacing.md },
   dateOptionsScroll: { maxHeight: 340 },
+  locationOptionsScroll: { maxHeight: 190 },
   activityGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
   optionCard: { backgroundColor: colors.surface, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md },
   optionSelected: { backgroundColor: colors.coralSoft, borderColor: colors.coral },
   optionSelectedText: { color: colors.coralDark },
   optionText: { color: colors.navyMuted },
+  descriptionInput: { minHeight: 48, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.md, color: colors.navy, backgroundColor: colors.surface },
+  noteInput: { minHeight: 88, textAlignVertical: 'top' },
   sheetBody: { minHeight: 420 },
   sheetTitle: { marginBottom: spacing.lg },
   inviteeList: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },

@@ -59,7 +59,7 @@ export type Database = {
           title: string;
           starts_at: string;
           activity: string;
-          status: 'upcoming' | 'invited' | 'past' | 'joined';
+          status: 'upcoming' | 'invited' | 'past' | 'joined' | 'cancelled';
           location_name: string;
           location_area: string | null;
           location_vibe: string | null;
