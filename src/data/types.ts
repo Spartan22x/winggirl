@@ -24,6 +24,14 @@ export type PlanParticipant = {
   status: PlanMemberStatus;
 };
 
+export type PlanOverlapCandidate = {
+  id: string;
+  activity: string;
+  startsAt: string;
+  isHost: boolean;
+  currentUserStatus: PlanMemberStatus | null;
+};
+
 export type PlanItem = {
   id: string;
   title: string;

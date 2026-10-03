@@ -1,6 +1,6 @@
 import { randomUUID } from 'expo-crypto';
 import { supabase } from '@/src/lib/supabase';
-import type { Conversation, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanParticipant, UserProfile } from './types';
+import type { Conversation, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, UserProfile } from './types';
 
 type ProfileRow = { id: string; first_name: string; age: number | null; bio: string | null; avatar_color: string };
 type AvailabilityRow = { profile_id: string; is_available: boolean };
@@ -138,6 +138,32 @@ export async function getPlans(profileId: string): Promise<PlanItem[]> {
       host: plan.host_id === profileId ? 'You' : 'Wing',
       note: plan.note ?? '',
     };
+  });
+}
+
+export async function getPlanOverlapCandidates(profileId: string): Promise<PlanOverlapCandidate[]> {
+  const { data, error } = await supabase
+    .from('plans')
+    .select('id, host_id, starts_at, activity, status, plan_members(profile_id, status)')
+    .in('status', ['upcoming', 'invited', 'joined'])
+    .gt('starts_at', new Date().toISOString())
+    .order('starts_at');
+  if (error) throw error;
+
+  const rows = data as unknown as {
+    id: string;
+    host_id: string;
+    starts_at: string;
+    activity: string;
+    status: PlanItem['status'];
+    plan_members: { profile_id: string; status: PlanMemberStatus }[];
+  }[];
+
+  return rows.flatMap((plan) => {
+    const isHost = plan.host_id === profileId;
+    const currentUserStatus = plan.plan_members.find((member) => member.profile_id === profileId)?.status ?? null;
+    if (!isHost && currentUserStatus !== 'joined') return [];
+    return [{ id: plan.id, activity: plan.activity, startsAt: plan.starts_at, isHost, currentUserStatus }];
   });
 }
 

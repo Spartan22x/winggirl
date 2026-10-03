@@ -1,10 +1,11 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { ActivityCard, BottomSheet, Card, EmptyState, Modal, PlanCard, PrimaryButton, Screen, SecondaryButton, SectionHeader, Text } from '@/src/components';
-import { createPlan, getActivities, getLocations, getPlans, getPublicProfiles } from '@/src/data/api';
-import type { PlanItem, UserProfile } from '@/src/data/types';
+import { createPlan, getActivities, getLocations, getPlanOverlapCandidates, getPlans, getPublicProfiles } from '@/src/data/api';
+import type { PlanItem, PlanOverlapCandidate, UserProfile } from '@/src/data/types';
 import { useAuth } from '@/src/auth/AuthProvider';
 import { getPlanDateTimeOptions } from '@/src/lib/planDateTime';
 import { colors, radii, spacing } from '@/src/theme';
@@ -35,11 +36,15 @@ export default function PlansScreen() {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [locations, setLocations] = useState<{ name: string; area: string; vibe: string; note: string }[]>([]);
   const [dateTimeOptions, setDateTimeOptions] = useState(() => getPlanDateTimeOptions());
+  const [overlapPlans, setOverlapPlans] = useState<PlanOverlapCandidate[]>([]);
+  const [isCheckingOverlaps, setIsCheckingOverlaps] = useState(false);
+  const [overlapCheckFailed, setOverlapCheckFailed] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState(() => buildEmptyDraft('', dateTimeOptions[0]));
   const userById = useMemo(() => new Map(users.map((profile) => [profile.id, profile])), [users]);
+  const overlapRequestRef = useRef(0);
 
   const activityParam = normalizeActivityChoice(Array.isArray(params.activity) ? params.activity[0] : params.activity);
   const inviteeParam = Array.isArray(params.invitee) ? params.invitee[0] : params.invitee;
@@ -52,6 +57,10 @@ export default function PlansScreen() {
   };
 
   const closeComposer = () => {
+    overlapRequestRef.current += 1;
+    setOverlapPlans([]);
+    setIsCheckingOverlaps(false);
+    setOverlapCheckFailed(false);
     setShowDiscardConfirm(false);
     setSheetOpen(false);
     setStep(0);
@@ -59,8 +68,12 @@ export default function PlansScreen() {
   };
 
   const startComposer = useCallback((activity = 'Dinner', inviteeId?: string) => {
+    const overlapRequest = ++overlapRequestRef.current;
     const nextOptions = getPlanDateTimeOptions();
     setDateTimeOptions(nextOptions);
+    setOverlapPlans([]);
+    setOverlapCheckFailed(false);
+    setIsCheckingOverlaps(Boolean(user));
     setShowDiscardConfirm(false);
     setStep(0);
     setDraft({
@@ -69,7 +82,17 @@ export default function PlansScreen() {
       invitees: inviteeId ? [inviteeId] : [],
     });
     setSheetOpen(true);
-  }, [locations]);
+
+    if (!user) return;
+    void getPlanOverlapCandidates(user.id).then((nextPlans) => {
+      if (overlapRequest !== overlapRequestRef.current) return;
+      setOverlapPlans(nextPlans);
+    }).catch(() => {
+      if (overlapRequest === overlapRequestRef.current) setOverlapCheckFailed(true);
+    }).finally(() => {
+      if (overlapRequest === overlapRequestRef.current) setIsCheckingOverlaps(false);
+    });
+  }, [locations, user]);
 
   useEffect(() => {
     if (!locations.length) return;
@@ -77,6 +100,39 @@ export default function PlansScreen() {
   }, [locations]);
 
   const hasMeaningfulDraft = draft.startsAt !== dateTimeOptions[0]?.startsAt || draft.activity !== 'Dinner' || draft.invitees.length > 0 || draft.location !== '' || draft.note !== '';
+  const conflictingPlans = useMemo(() => overlapPlans.filter((plan) => new Date(plan.startsAt).getTime() === new Date(draft.startsAt).getTime()), [draft.startsAt, overlapPlans]);
+
+  const renderOverlapWarning = () => {
+    if (isCheckingOverlaps) return <Text style={styles.overlapStatus}>Checking your upcoming plans…</Text>;
+    if (overlapCheckFailed) {
+      return (
+        <Card style={styles.overlapWarning}>
+          <Text style={styles.overlapBody}>We couldn’t check for another plan at this time. You can still continue.</Text>
+        </Card>
+      );
+    }
+    if (!conflictingPlans.length) return null;
+
+    return (
+      <Card style={styles.overlapWarning}>
+        <View style={styles.overlapHeading}>
+          <Ionicons name="warning-outline" size={20} color={colors.coralDark} />
+          <Text variant="title" style={styles.overlapTitle}>Time conflict</Text>
+        </View>
+        <Text style={styles.overlapBody}>
+          {conflictingPlans.length === 1 ? 'You’re already participating in another plan at this time.' : `You already have ${conflictingPlans.length} plans at this time.`}
+        </Text>
+        {conflictingPlans.slice(0, 3).map((plan) => (
+          <View key={plan.id} style={styles.overlapPlan}>
+            <Text variant="label" style={styles.overlapPlanTitle}>{plan.activity} · {draft.time}</Text>
+            <Text style={styles.overlapMeta}>{plan.isHost ? 'You’re hosting' : 'You’re participating'}</Text>
+          </View>
+        ))}
+        {conflictingPlans.length > 3 ? <Text style={styles.overlapMeta}>And {conflictingPlans.length - 3} more plans.</Text> : null}
+        <Text style={styles.overlapBody}>You can still create this plan if you want to do both.</Text>
+      </Card>
+    );
+  };
 
   const loadPlansData = useCallback(async () => {
     if (!user) return;
@@ -154,6 +210,7 @@ export default function PlansScreen() {
               </Pressable>
             ))}
           </ScrollView>
+          {renderOverlapWarning()}
         </View>
       );
     }
@@ -224,6 +281,7 @@ export default function PlansScreen() {
           <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Location:</Text> {draft.location}</Text>
           {draft.note ? <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Description:</Text> {draft.note}</Text> : null}
         </Card>
+        {renderOverlapWarning()}
       </View>
     );
   };
@@ -281,6 +339,14 @@ const styles = StyleSheet.create({
   button: { alignSelf: 'flex-start', marginBottom: spacing.xl },
   grid: { gap: spacing.md },
   dateOptionsScroll: { maxHeight: 340 },
+  overlapWarning: { backgroundColor: colors.coralSoft, borderColor: colors.coral, marginTop: spacing.md, padding: spacing.md },
+  overlapHeading: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
+  overlapTitle: { color: colors.navy, marginBottom: 0 },
+  overlapBody: { color: colors.navyMuted, marginBottom: spacing.sm },
+  overlapPlan: { paddingLeft: spacing.md, marginBottom: spacing.sm },
+  overlapPlanTitle: { color: colors.navy },
+  overlapMeta: { color: colors.navyMuted, marginTop: spacing.xs },
+  overlapStatus: { color: colors.navyMuted, marginTop: spacing.md },
   locationOptionsScroll: { maxHeight: 190 },
   activityGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
   optionCard: { backgroundColor: colors.surface, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md },
