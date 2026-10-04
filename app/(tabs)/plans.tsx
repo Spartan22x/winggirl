@@ -21,7 +21,9 @@ const normalizeActivityChoice = (activity?: string) => {
 const buildEmptyDraft = (location = '', defaultDateTime = getPlanDateTimeOptions()[0]) => ({
   time: defaultDateTime.label,
   startsAt: defaultDateTime.startsAt,
+  visibility: 'invite_only' as 'invite_only' | 'open',
   activity: 'Dinner',
+  secondaryActivity: null as string | null,
   invitees: [] as string[],
   location,
   note: '',
@@ -166,7 +168,7 @@ export default function PlansScreen() {
 
   const upcomingPlans = useMemo(() => plans.filter((plan) => {
     const isEligibleStatus = plan.status === 'upcoming' || plan.status === 'invited' || plan.status === 'joined';
-    const isParticipating = plan.isHost || plan.currentUserStatus === 'joined';
+    const isParticipating = plan.isHost || plan.currentUserStatus === 'joined' || plan.isOpenPlan;
     return isEligibleStatus && isParticipating && new Date(plan.startsAt).getTime() > Date.now();
   }), [plans]);
   const invitations = useMemo(() => plans.filter((plan) => {
@@ -175,7 +177,8 @@ export default function PlansScreen() {
   }), [plans]);
   const pastPlans = useMemo(() => plans.filter((plan) => plan.status === 'past' || plan.status === 'cancelled' || new Date(plan.startsAt).getTime() <= Date.now()), [plans]);
 
-  const advanceStep = () => setStep((value) => Math.min(value + 1, 5));
+  const maxStep = draft.visibility === 'open' ? 4 : 5;
+  const advanceStep = () => setStep((value) => Math.min(value + 1, maxStep));
   const previousStep = () => setStep((value) => Math.max(value - 1, 0));
 
   const handleCancelRequest = () => {
@@ -193,13 +196,37 @@ export default function PlansScreen() {
   const handleCreatePlan = async () => {
     if (!user) return;
     const selectedInvitees = draft.invitees.map((profileId) => ({ profile_id: profileId, status: 'invited' as const }));
-    await createPlan(user.id, { startsAt: draft.startsAt, activity: draft.activity, invitees: selectedInvitees, location: draft.location, note: draft.note });
+    await createPlan(user.id, {
+      startsAt: draft.startsAt,
+      activity: draft.activity,
+      secondaryActivity: draft.secondaryActivity,
+      invitees: selectedInvitees,
+      location: draft.location,
+      note: draft.note,
+      visibility: draft.visibility,
+    });
     setPlans(await getPlans(user.id));
     closeComposer();
   };
 
   const renderDraftStep = () => {
     if (step === 0) {
+      return (
+        <View>
+          <Text variant="title" style={styles.sheetTitle}>Who can join?</Text>
+          <View style={styles.typeGrid}>
+            <Pressable onPress={() => setDraft((current) => ({ ...current, visibility: 'invite_only' }))} style={[styles.typeCard, draft.visibility === 'invite_only' && styles.optionSelected]}>
+              <Text variant="title" style={[styles.typeTitle, draft.visibility === 'invite_only' && styles.optionSelectedText]}>Invite specific WingGirls</Text>
+            </Pressable>
+            <Pressable onPress={() => setDraft((current) => ({ ...current, visibility: 'open' }))} style={[styles.typeCard, draft.visibility === 'open' && styles.optionSelected]}>
+              <Text variant="title" style={[styles.typeTitle, draft.visibility === 'open' && styles.optionSelectedText]}>Open Plan</Text>
+            </Pressable>
+          </View>
+        </View>
+      );
+    }
+
+    if (step === 1) {
       return (
         <View>
           <Text variant="title" style={styles.sheetTitle}>Choose a date and time</Text>
@@ -215,20 +242,37 @@ export default function PlansScreen() {
       );
     }
 
-    if (step === 1) {
+    if (step === 2) {
       return (
         <View>
-          <Text variant="title" style={styles.sheetTitle}>Choose an activity</Text>
+          <Text variant="title" style={styles.sheetTitle}>{draft.visibility === 'open' ? 'Choose one or two activities' : 'Choose an activity'}</Text>
           <View style={styles.activityGrid}>
-            {activities.map((activity) => (
-              <ActivityCard key={activity} label={activity} selected={draft.activity === activity} onPress={() => setDraft((current) => ({ ...current, activity }))} />
-            ))}
+            {activities.map((activity) => {
+              const selected = draft.visibility === 'open'
+                ? draft.activity === activity || draft.secondaryActivity === activity
+                : draft.activity === activity;
+              return (
+                <ActivityCard
+                  key={activity}
+                  label={activity}
+                  selected={selected}
+                  onPress={() => setDraft((current) => {
+                    if (current.visibility !== 'open') return { ...current, activity };
+                    if (current.activity === activity && !current.secondaryActivity) return current;
+                    if (current.secondaryActivity === activity) return { ...current, secondaryActivity: null };
+                    if (!current.secondaryActivity) return { ...current, secondaryActivity: activity };
+                    if (current.activity === activity) return { ...current, activity: current.secondaryActivity, secondaryActivity: null };
+                    return { ...current, secondaryActivity: activity };
+                  })}
+                />
+              );
+            })}
           </View>
         </View>
       );
     }
 
-    if (step === 2) {
+    if (step === 3 && draft.visibility === 'invite_only') {
       return (
         <View>
           <Text variant="title" style={styles.sheetTitle}>Who are you inviting?</Text>
@@ -252,7 +296,7 @@ export default function PlansScreen() {
       );
     }
 
-    if (step === 3) {
+    if (step === (draft.visibility === 'open' ? 3 : 4)) {
       return (
         <View>
           <Text variant="title" style={styles.sheetTitle}>Pick a location</Text>
@@ -275,9 +319,10 @@ export default function PlansScreen() {
       <View>
         <Text variant="title" style={styles.sheetTitle}>Review</Text>
         <Card style={styles.reviewCard}>
+          <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Plan type:</Text> {draft.visibility === 'open' ? 'Open Plan' : 'Invite-only Plan'}</Text>
           <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>When:</Text> {draft.time}</Text>
-          <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Activity:</Text> {draft.activity}</Text>
-          <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Invitees:</Text> {selectedInvitees.join(', ') || 'Nobody yet'}</Text>
+          <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Activity:</Text> {draft.secondaryActivity ? `${draft.activity} · ${draft.secondaryActivity}` : draft.activity}</Text>
+          {draft.visibility === 'invite_only' ? <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Invitees:</Text> {selectedInvitees.join(', ') || 'Nobody yet'}</Text> : <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Who:</Text> Looking for WingGirls to join</Text>}
           <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Location:</Text> {draft.location}</Text>
           {draft.note ? <Text style={styles.reviewLine}><Text style={styles.reviewLabel}>Description:</Text> {draft.note}</Text> : null}
         </Card>
@@ -295,17 +340,17 @@ export default function PlansScreen() {
 
       <SectionHeader title="Upcoming" action="THIS WEEK" />
       {upcomingPlans.length > 0 ? upcomingPlans.map((plan) => (
-        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} membershipStatus={plan.currentUserStatus} isHost={plan.isHost} onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })} />
+        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} membershipStatus={plan.currentUserStatus} isHost={plan.isHost} isOpenPlan={plan.isOpenPlan} onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })} />
       )) : <EmptyState title="Nothing on the calendar yet" message="Start with something easy: coffee, a walk, or a spontaneous yes." icon="✦" /> }
 
       <SectionHeader title="Invitations" action="NEW" />
       {invitations.length > 0 ? invitations.map((plan) => (
-        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} membershipStatus={plan.currentUserStatus} isHost={plan.isHost} onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })} />
+        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} membershipStatus={plan.currentUserStatus} isHost={plan.isHost} isOpenPlan={plan.isOpenPlan} onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })} />
       )) : <EmptyState title="No invites yet" message="Your best plans are still waiting to be made." icon="✦" /> }
 
       <SectionHeader title="Past plans" action="ARCHIVE" />
       {pastPlans.length > 0 ? pastPlans.map((plan) => (
-        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} membershipStatus={plan.currentUserStatus} isHost={plan.isHost} onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })} />
+        <PlanCard key={plan.id} title={plan.title} date={plan.date} time={plan.time} activity={plan.activity} location={plan.location} attendees={plan.attendees} status={plan.status} membershipStatus={plan.currentUserStatus} isHost={plan.isHost} isOpenPlan={plan.isOpenPlan} onPress={() => router.push({ pathname: '/plan/[id]', params: { id: plan.id } })} />
       )) : <EmptyState title="No past plans" message="Your favorite catch-ups will land here." icon="✦" /> }
 
       <BottomSheet visible={sheetOpen} onClose={handleCancelRequest}>
@@ -314,7 +359,7 @@ export default function PlansScreen() {
           <View style={styles.stepActions}>
             {step > 0 ? <SecondaryButton label="Back" onPress={previousStep} style={styles.backButton} /> : null}
             <SecondaryButton label="Cancel" onPress={handleCancelRequest} style={styles.cancelButton} />
-            {step < 4 ? <PrimaryButton label="Next" onPress={advanceStep} style={styles.primaryAction} /> : <PrimaryButton label="Create plan" onPress={handleCreatePlan} style={styles.primaryAction} />}
+            {step < maxStep ? <PrimaryButton label="Next" onPress={advanceStep} style={styles.primaryAction} /> : <PrimaryButton label="Create plan" onPress={handleCreatePlan} style={styles.primaryAction} />}
           </View>
         </View>
       </BottomSheet>
@@ -363,6 +408,9 @@ const styles = StyleSheet.create({
   locationCard: { backgroundColor: colors.surface, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md },
   locationTitle: { marginBottom: 6 },
   locationMeta: { color: colors.navyMuted },
+  typeGrid: { gap: spacing.md },
+  typeCard: { backgroundColor: colors.surface, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md },
+  typeTitle: { color: colors.navyMuted },
   reviewCard: { padding: spacing.md },
   reviewLine: { marginBottom: spacing.sm, color: colors.navyMuted },
   reviewLabel: { color: colors.navy, fontWeight: '700' },

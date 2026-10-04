@@ -65,7 +65,7 @@ export default function HomeScreen() {
   const availableUsers = users.filter((nextUser) => nextUser.available);
   const upcomingPlans = plans.filter((plan) => {
     const isActiveStatus = plan.status === 'upcoming' || plan.status === 'invited' || plan.status === 'joined';
-    const isParticipating = plan.isHost || plan.currentUserStatus === 'joined';
+    const isParticipating = plan.isHost || plan.currentUserStatus === 'joined' || plan.isOpenPlan;
     return isActiveStatus && isParticipating && new Date(plan.startsAt).getTime() > Date.now();
   }).slice(0, 2);
 

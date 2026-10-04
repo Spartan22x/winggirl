@@ -1,6 +1,6 @@
 import { randomUUID } from 'expo-crypto';
 import { supabase } from '@/src/lib/supabase';
-import type { Conversation, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, UserProfile } from './types';
+import type { Conversation, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, PlanVisibility, UserProfile } from './types';
 
 type ProfileRow = { id: string; first_name: string; age: number | null; bio: string | null; avatar_color: string };
 type AvailabilityRow = { profile_id: string; is_available: boolean };
@@ -99,9 +99,9 @@ export async function getLocations() {
 }
 
 export async function getPlans(profileId: string): Promise<PlanItem[]> {
-  const { data: plans, error } = await supabase.from('plans').select('id, host_id, title, starts_at, activity, status, location_name, note').order('starts_at');
+  const { data: plans, error } = await supabase.from('plans').select('id, host_id, title, starts_at, activity, secondary_activity, status, visibility, location_name, note').order('starts_at');
   if (error) throw error;
-  const visiblePlans = plans as { id: string; host_id: string; title: string; starts_at: string; activity: PlanItem['activity']; status: PlanItem['status']; location_name: string; note: string | null }[];
+  const visiblePlans = plans as { id: string; host_id: string; title: string; starts_at: string; activity: PlanItem['activity']; secondary_activity: string | null; status: PlanItem['status']; visibility: PlanVisibility; location_name: string; note: string | null }[];
   const planIds = visiblePlans.map((plan) => plan.id);
   const { data: members, error: membersError } = planIds.length
     ? await supabase.from('plan_members').select('plan_id, profile_id, status, profiles(first_name)').in('plan_id', planIds)
@@ -111,7 +111,7 @@ export async function getPlans(profileId: string): Promise<PlanItem[]> {
   (members as unknown as { plan_id: string; profile_id: string; status: PlanMemberStatus; profiles: { first_name: string } | null }[]).forEach((member) => {
     membersByPlan.set(member.plan_id, [...(membersByPlan.get(member.plan_id) ?? []), { profileId: member.profile_id, firstName: member.profiles?.first_name ?? 'Participant', status: member.status }]);
   });
-  return visiblePlans.filter((plan) => plan.host_id === profileId || membersByPlan.has(plan.id)).map((plan) => {
+  return visiblePlans.map((plan) => {
     const date = new Date(plan.starts_at);
     const membersForPlan = membersByPlan.get(plan.id) ?? [];
     const participants: PlanParticipant[] = membersForPlan.map((member) => ({
@@ -128,7 +128,10 @@ export async function getPlans(profileId: string): Promise<PlanItem[]> {
       time: date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
       startsAt: plan.starts_at,
       activity: plan.activity,
+      secondaryActivity: plan.secondary_activity,
       status: plan.status,
+      visibility: plan.visibility,
+      isOpenPlan: plan.visibility === 'open',
       hostId: plan.host_id,
       isHost: plan.host_id === profileId,
       currentUserStatus: membersForPlan.find((member) => member.profileId === profileId)?.status ?? null,
@@ -170,7 +173,7 @@ export async function getPlanOverlapCandidates(profileId: string): Promise<PlanO
 export async function getPlanDetails(planId: string, profileId: string): Promise<PlanDetails | null> {
   const { data: plan, error: planError } = await supabase
     .from('plans')
-    .select('id, host_id, title, starts_at, activity, status, location_name, note')
+    .select('id, host_id, title, starts_at, activity, secondary_activity, status, visibility, location_name, note')
     .eq('id', planId)
     .maybeSingle();
   if (planError) throw planError;
@@ -201,7 +204,10 @@ export async function getPlanDetails(planId: string, profileId: string): Promise
     time: date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
     startsAt: plan.starts_at,
     activity: plan.activity,
+    secondaryActivity: plan.secondary_activity,
     status: plan.status,
+    visibility: plan.visibility,
+    isOpenPlan: plan.visibility === 'open',
     hostId: plan.host_id,
     isHost,
     currentUserStatus: participantRows.find((member) => member.profile_id === profileId)?.status ?? null,
@@ -220,12 +226,23 @@ export async function getPlanDetails(planId: string, profileId: string): Promise
   };
 }
 
-export async function createPlan(profileId: string, draft: { startsAt: string; activity: string; invitees: { profile_id: string; status: 'invited' }[]; location: string; note?: string }) {
+export async function createPlan(profileId: string, draft: { startsAt: string; activity: string; secondaryActivity?: string | null; invitees: { profile_id: string; status: 'invited' }[]; location: string; note?: string; visibility?: PlanVisibility }) {
   const startsAt = new Date(draft.startsAt).toISOString();
   const planId = randomUUID();
-  const { error } = await supabase.from('plans').insert({ id: planId, host_id: profileId, title: `${draft.activity} with the girls`, starts_at: startsAt, activity: draft.activity, status: 'upcoming', location_name: draft.location, note: draft.note?.trim() || null });
+  const { error } = await supabase.from('plans').insert({
+    id: planId,
+    host_id: profileId,
+    title: `${draft.activity} with the girls`,
+    starts_at: startsAt,
+    activity: draft.activity,
+    secondary_activity: draft.secondaryActivity?.trim() || null,
+    status: 'upcoming',
+    visibility: draft.visibility ?? 'invite_only',
+    location_name: draft.location,
+    note: draft.note?.trim() || null,
+  });
   if (error) throw error;
-  if (draft.invitees.length) {
+  if (draft.visibility === 'invite_only' && draft.invitees.length) {
     const { error: memberError } = await supabase.from('plan_members').insert(draft.invitees.map((invitee) => ({ plan_id: planId, profile_id: invitee.profile_id, status: invitee.status })));
     if (memberError) throw memberError;
   }
@@ -236,6 +253,11 @@ export async function joinPlan(planId: string, profileId: string) {
   const { data, error } = await supabase.from('plan_members').update({ status: 'joined' }).eq('plan_id', planId).eq('profile_id', profileId).eq('status', 'invited').select('plan_id').maybeSingle();
   if (error) throw error;
   if (!data) throw new Error('This invitation is no longer available.');
+}
+
+export async function joinOpenPlan(planId: string, profileId: string) {
+  const { error } = await supabase.from('plan_members').insert({ plan_id: planId, profile_id: profileId, status: 'joined' });
+  if (error) throw error;
 }
 
 export async function leavePlan(planId: string, profileId: string) {
