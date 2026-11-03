@@ -13,6 +13,39 @@ export type UserProfile = {
   friendsOfFriends: boolean;
 };
 
+export type ConnectionProfile = {
+  id: string;
+  firstName: string;
+  age: number | null;
+  bio: string;
+  avatarColor: string;
+};
+
+export type ConnectionRelationshipStatus =
+  | 'none'
+  | 'outgoing_pending'
+  | 'incoming_pending'
+  | 'accepted'
+  | 'declined';
+
+export type ConnectionRequestResult =
+  | 'requested'
+  | 'outgoing_pending'
+  | 'incoming_pending'
+  | 'connected';
+
+export type IncomingConnectionRequest = {
+  requesterId: string;
+  createdAt: string;
+  profile: ConnectionProfile | null;
+};
+
+export type AcceptedConnection = {
+  profileId: string;
+  connectedAt: string;
+  profile: ConnectionProfile | null;
+};
+
 export type PlanStatus = 'upcoming' | 'invited' | 'past' | 'joined' | 'cancelled';
 export type PlanMemberStatus = 'invited' | 'joined' | 'declined';
 

@@ -1,12 +1,48 @@
 import { randomUUID } from 'expo-crypto';
 import { supabase } from '@/src/lib/supabase';
-import type { Conversation, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, PlanVisibility, UserProfile } from './types';
+import type { AcceptedConnection, ConnectionProfile, ConnectionRelationshipStatus, ConnectionRequestResult, Conversation, IncomingConnectionRequest, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, PlanVisibility, UserProfile } from './types';
 
 type ProfileRow = { id: string; first_name: string; age: number | null; bio: string | null; avatar_color: string };
 type AvailabilityRow = { profile_id: string; is_available: boolean };
 type InterestLink = { profile_id: string; interests: { name: string } | null };
+type ConnectionRow = {
+  requester_id: string;
+  addressee_id: string;
+  status: 'pending' | 'accepted' | 'declined';
+  created_at: string;
+  updated_at: string;
+};
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+async function getAuthenticatedProfileId() {
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error) throw error;
+  if (!user) throw new Error('You must be signed in to access connections.');
+  return user.id;
+}
+
+async function getConnectionProfiles(profileIds: string[]) {
+  const uniqueProfileIds = [...new Set(profileIds)];
+  if (!uniqueProfileIds.length) return new Map<string, ConnectionProfile>();
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, first_name, age, bio, avatar_color')
+    .in('id', uniqueProfileIds);
+  if (error) throw error;
+
+  return new Map((data as ProfileRow[]).map((profile) => [
+    profile.id,
+    {
+      id: profile.id,
+      firstName: profile.first_name,
+      age: profile.age,
+      bio: profile.bio ?? '',
+      avatarColor: profile.avatar_color,
+    },
+  ]));
+}
 
 export async function getProfile(profileId: string) {
   const { data, error } = await supabase.from('profiles').select('id, first_name, age, bio, avatar_color').eq('id', profileId).single();
@@ -29,6 +65,107 @@ export async function getConnectionCount(profileId: string) {
   const { count, error } = await supabase.from('connections').select('requester_id', { count: 'exact', head: true }).or(`requester_id.eq.${profileId},addressee_id.eq.${profileId}`).eq('status', 'accepted');
   if (error) throw error;
   return count ?? 0;
+}
+
+export async function sendConnectionRequest(targetProfileId: string): Promise<ConnectionRequestResult> {
+  const { data, error } = await supabase.rpc('request_connection', { target_profile_id: targetProfileId });
+  if (error) throw error;
+  if (data !== 'requested' && data !== 'outgoing_pending' && data !== 'incoming_pending' && data !== 'connected') {
+    throw new Error('The connection request returned an unexpected result.');
+  }
+  return data;
+}
+
+export async function respondToConnectionRequest(requesterProfileId: string, acceptRequest: boolean): Promise<'accepted' | 'declined'> {
+  const { data, error } = await supabase.rpc('respond_to_connection', {
+    requester_profile_id: requesterProfileId,
+    accept_request: acceptRequest,
+  });
+  if (error) throw error;
+  const expectedResult = acceptRequest ? 'accepted' : 'declined';
+  if (data !== expectedResult) {
+    throw new Error('The connection response returned an unexpected result.');
+  }
+  return expectedResult;
+}
+
+export async function getIncomingConnectionRequests(): Promise<IncomingConnectionRequest[]> {
+  const profileId = await getAuthenticatedProfileId();
+  const { data, error } = await supabase
+    .from('connections')
+    .select('requester_id, addressee_id, status, created_at, updated_at')
+    .eq('addressee_id', profileId)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+
+  const requests: ConnectionRow[] = data;
+  const profiles = await getConnectionProfiles(requests.map((request) => request.requester_id));
+  return requests.map((request) => ({
+    requesterId: request.requester_id,
+    createdAt: request.created_at,
+    profile: profiles.get(request.requester_id) ?? null,
+  }));
+}
+
+export async function getAcceptedConnections(): Promise<AcceptedConnection[]> {
+  const profileId = await getAuthenticatedProfileId();
+  const { data, error } = await supabase
+    .from('connections')
+    .select('requester_id, addressee_id, status, created_at, updated_at')
+    .eq('status', 'accepted')
+    .or(`requester_id.eq.${profileId},addressee_id.eq.${profileId}`)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+
+  const connections: ConnectionRow[] = data;
+  const connectedProfileIds = connections.map((connection) =>
+    connection.requester_id === profileId ? connection.addressee_id : connection.requester_id
+  );
+  const profiles = await getConnectionProfiles(connectedProfileIds);
+  return connections.map((connection) => {
+    const connectedProfileId = connection.requester_id === profileId
+      ? connection.addressee_id
+      : connection.requester_id;
+    return {
+      profileId: connectedProfileId,
+      connectedAt: connection.updated_at,
+      profile: profiles.get(connectedProfileId) ?? null,
+    };
+  });
+}
+
+export async function getConnectionStatus(otherProfileId: string): Promise<ConnectionRelationshipStatus> {
+  const profileId = await getAuthenticatedProfileId();
+  if (otherProfileId === profileId) {
+    throw new Error('A connection status can only be checked for another profile.');
+  }
+
+  const [outgoing, incoming] = await Promise.all([
+    supabase
+      .from('connections')
+      .select('requester_id, addressee_id, status')
+      .eq('requester_id', profileId)
+      .eq('addressee_id', otherProfileId)
+      .maybeSingle(),
+    supabase
+      .from('connections')
+      .select('requester_id, addressee_id, status')
+      .eq('requester_id', otherProfileId)
+      .eq('addressee_id', profileId)
+      .maybeSingle(),
+  ]);
+  if (outgoing.error) throw outgoing.error;
+  if (incoming.error) throw incoming.error;
+  if (outgoing.data && incoming.data) {
+    throw new Error('Multiple connection records exist for this profile pair.');
+  }
+
+  const connection = outgoing.data ?? incoming.data;
+  if (!connection) return 'none';
+  if (connection.status === 'accepted') return 'accepted';
+  if (connection.status === 'declined') return 'declined';
+  return connection.requester_id === profileId ? 'outgoing_pending' : 'incoming_pending';
 }
 
 export async function getPublicProfiles(currentProfileId: string): Promise<UserProfile[]> {

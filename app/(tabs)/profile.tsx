@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, TextInput, View } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Avatar, Card, Modal, PrimaryButton, Screen, SecondaryButton, Text } from '@/src/components';
 import { getConnectionCount, getProfile, getProfileInterests, saveProfile } from '@/src/data/api';
 import { useAuth } from '@/src/auth/AuthProvider';
@@ -7,6 +8,7 @@ import { colors, radii, spacing } from '@/src/theme';
 
 export default function ProfileScreen() {
   const { user, signOut } = useAuth();
+  const router = useRouter();
   const [profile, setProfile] = useState<{ firstName: string; age: number | null; bio: string; avatarColor: string } | null>(null);
   const [interests, setInterests] = useState<string[]>([]);
   const [connectionCount, setConnectionCount] = useState(0);
@@ -122,6 +124,13 @@ export default function ProfileScreen() {
 
       <View style={styles.actions}>
         <SecondaryButton label="Edit Profile" onPress={openEditor} style={styles.button} />
+        {__DEV__ ? (
+          <SecondaryButton
+            label="Connections API test"
+            onPress={() => router.push('/dev-connections')}
+            style={styles.button}
+          />
+        ) : null}
       </View>
       {saveMessage ? <Text style={[styles.saveMessage, saveError && styles.saveError]}>{saveMessage}</Text> : null}
       <SecondaryButton label="Sign out" onPress={signOut} style={styles.signOutButton} />

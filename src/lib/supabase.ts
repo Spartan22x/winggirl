@@ -106,5 +106,15 @@ export type Database = {
         Update: never;
       };
     };
+    Functions: {
+      request_connection: {
+        Args: { target_profile_id: string };
+        Returns: string;
+      };
+      respond_to_connection: {
+        Args: { requester_profile_id: string; accept_request: boolean };
+        Returns: string;
+      };
+    };
   };
 };
