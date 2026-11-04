@@ -1,5 +1,6 @@
 import { Session, User } from '@supabase/supabase-js';
 import { PropsWithChildren, createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { Platform } from 'react-native';
 import { supabase, supabaseConfigured } from '@/src/lib/supabase';
 
 const configurationError = () => new Error('Supabase is not configured. Copy .env.example to .env and add your project URL and public key.');
@@ -10,6 +11,8 @@ type AuthContextValue = {
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null; session: Session | null }>;
   signUp: (email: string, password: string) => Promise<{ error: Error | null; session: Session | null }>;
+  resetPassword: (email: string) => Promise<{ error: Error | null }>;
+  updatePassword: (password: string) => Promise<{ error: Error | null }>;
   signInWithProvider: (provider: 'google' | 'apple' | 'facebook') => Promise<{ error: Error | null }>;
   signOut: () => Promise<{ error: Error | null }>;
 };
@@ -51,6 +54,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
       if (!supabaseConfigured) return { error: configurationError(), session: null };
       const { data, error } = await supabase.auth.signUp({ email, password });
       return { error, session: data.session };
+    },
+    resetPassword: async (email) => {
+      if (!supabaseConfigured) return { error: configurationError() };
+      const redirectTo = Platform.OS === 'web'
+        ? `${window.location.origin}/reset-password`
+        : 'winggirl://reset-password';
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+      return { error };
+    },
+    updatePassword: async (password) => {
+      if (!supabaseConfigured) return { error: configurationError() };
+      const { error } = await supabase.auth.updateUser({ password });
+      return { error };
     },
     signInWithProvider: async (provider) => {
       if (!supabaseConfigured) return { error: configurationError() };

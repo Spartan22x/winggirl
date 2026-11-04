@@ -13,6 +13,7 @@ export default function RootLayout() {
         <Stack.Screen name="onboarding" />
         <Stack.Screen name="profile-setup" />
         <Stack.Screen name="dev-connections" />
+        <Stack.Screen name="connections" />
         <Stack.Screen name="(tabs)" />
       </Stack>
     </AuthProvider>

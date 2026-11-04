@@ -13,23 +13,26 @@ type PlanCardProps = {
   status: PlanStatus;
   membershipStatus?: PlanMemberStatus | null;
   isHost?: boolean;
+  isOpenPlan?: boolean;
   onPress?: () => void;
 };
 
-export function PlanCard({ title, date, time, activity, location, attendees, status, membershipStatus, isHost = false, onPress }: PlanCardProps) {
+export function PlanCard({ title, date, time, activity, location, attendees, status, membershipStatus, isHost = false, isOpenPlan = false, onPress }: PlanCardProps) {
   const statusLabel = status === 'cancelled'
     ? 'Cancelled'
     : status === 'past'
       ? 'Past'
-      : membershipStatus === 'invited'
-        ? 'Invitation'
-        : isHost
-          ? 'Hosting'
-          : membershipStatus === 'joined'
-            ? 'Joined'
-            : status === 'invited'
-              ? 'Invitation'
-              : 'Upcoming';
+      : isOpenPlan
+        ? 'Open Plan'
+        : membershipStatus === 'invited'
+          ? 'Invitation'
+          : isHost
+            ? 'Hosting'
+            : membershipStatus === 'joined'
+              ? 'Joined'
+              : status === 'invited'
+                ? 'Invitation'
+                : 'Upcoming';
 
   return (
     <Pressable accessibilityRole={onPress ? 'button' : undefined} onPress={onPress} style={({ pressed }) => [styles.card, pressed && styles.pressed]}>

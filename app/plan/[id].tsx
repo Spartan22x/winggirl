@@ -4,7 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { ActivityCard, Avatar, BottomSheet, Card, EmptyState, Modal, PrimaryButton, Screen, SecondaryButton, StatusPill, Text } from '@/src/components';
-import { cancelPlan, getActivities, getLocations, getPlanDetails, joinPlan, leavePlan, updatePlan } from '@/src/data/api';
+import { cancelPlan, getActivities, getLocations, getPlanDetails, joinOpenPlan, joinPlan, leavePlan, updatePlan } from '@/src/data/api';
 import type { PlanDateTimeOption } from '@/src/lib/planDateTime';
 import { getPlanDateTimeOptions } from '@/src/lib/planDateTime';
 import type { PlanDetails } from '@/src/data/types';
@@ -63,13 +63,15 @@ export default function PlanDetailScreen() {
     ? 'Cancelled'
     : plan.status === 'past' || new Date(plan.startsAt).getTime() <= Date.now()
       ? 'Past'
-      : plan.isHost
-        ? 'Hosting'
-        : plan.currentUserStatus === 'invited'
-          ? 'Invitation'
-          : plan.currentUserStatus === 'joined'
-            ? 'Joined'
-            : 'Not participating';
+      : plan.isOpenPlan
+        ? 'Open Plan'
+        : plan.isHost
+          ? 'Hosting'
+          : plan.currentUserStatus === 'invited'
+            ? 'Invitation'
+            : plan.currentUserStatus === 'joined'
+              ? 'Joined'
+              : 'Not participating';
 
   const handleBack = () => {
     if (router.canGoBack()) router.back();
@@ -82,8 +84,9 @@ export default function PlanDetailScreen() {
     setActionError(null);
     setNotice(null);
     try {
-      await joinPlan(plan.id, user.id);
-      setNotice('You joined this plan.');
+      if (plan.isOpenPlan) await joinOpenPlan(plan.id, user.id);
+      else await joinPlan(plan.id, user.id);
+      setNotice(plan.isOpenPlan ? 'You joined this Open Plan.' : 'You joined this plan.');
       await loadPlan(false);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'We could not join this plan.');
@@ -303,7 +306,7 @@ export default function PlanDetailScreen() {
         )) : <Text style={styles.muted}>No participants yet.</Text>}
       </Card>
 
-      {isActive && !plan.isHost && plan.currentUserStatus === 'invited' ? <PrimaryButton label={busy ? 'Joining…' : 'Accept invitation'} onPress={() => void handleJoin()} disabled={busy} style={styles.actionButton} /> : null}
+      {isActive && !plan.isHost && (plan.isOpenPlan || plan.currentUserStatus === 'invited') && plan.currentUserStatus !== 'joined' ? <PrimaryButton label={busy ? 'Joining…' : plan.isOpenPlan ? 'Join Plan' : 'Accept invitation'} onPress={() => void handleJoin()} disabled={busy} style={styles.actionButton} /> : null}
       {isActive && !plan.isHost && plan.currentUserStatus === 'joined' ? <SecondaryButton label={busy ? 'Leaving…' : 'Leave plan'} onPress={() => setConfirmation('leave')} disabled={busy} style={styles.actionButton} /> : null}
       {isActive && plan.isHost ? (
         <View style={styles.hostActions}>

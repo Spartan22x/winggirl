@@ -47,6 +47,7 @@ export type AcceptedConnection = {
 };
 
 export type PlanStatus = 'upcoming' | 'invited' | 'past' | 'joined' | 'cancelled';
+export type PlanVisibility = 'invite_only' | 'open';
 export type PlanMemberStatus = 'invited' | 'joined' | 'declined';
 
 export type PlanParticipant = {
@@ -72,7 +73,10 @@ export type PlanItem = {
   time: string;
   startsAt: string;
   activity: string;
+  secondaryActivity?: string | null;
   status: PlanStatus;
+  visibility: PlanVisibility;
+  isOpenPlan: boolean;
   hostId: string;
   isHost: boolean;
   currentUserStatus: PlanMemberStatus | null;

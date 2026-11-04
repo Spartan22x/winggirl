@@ -62,6 +62,7 @@ export default function SignInScreen() {
       <TextInput value={email} onChangeText={setEmail} placeholder="Enter your email" autoCapitalize="none" keyboardType="email-address" style={styles.input} />
       <Text>Password</Text>
       <TextInput value={password} onChangeText={setPassword} placeholder="Enter your password" secureTextEntry style={styles.input} />
+      <Text accessibilityRole="link" onPress={() => router.push('/(auth)/forgot-password')} style={styles.forgotPassword}>Forgot password?</Text>
       <PrimaryButton label="Sign in" disabled={submitting} onPress={() => submit(false)} style={styles.button} />
       <SecondaryButton label="Create account" disabled={submitting} onPress={() => submit(true)} style={styles.button} />
       <SecondaryButton label="Continue with Google" disabled={submitting} onPress={() => continueWithProvider('google')} style={styles.button} />
@@ -78,5 +79,6 @@ const styles = StyleSheet.create({
   feedbackError: { color: colors.coralDark },
   form: { gap: spacing.sm },
   input: { minHeight: 48, justifyContent: 'center', paddingHorizontal: spacing.md, backgroundColor: colors.surfaceMuted, borderRadius: 12 },
+  forgotPassword: { color: colors.coralDark, textAlign: 'right', paddingVertical: spacing.xs },
   button: { marginTop: spacing.sm },
 });

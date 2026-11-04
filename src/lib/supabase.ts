@@ -59,6 +59,8 @@ export type Database = {
           title: string;
           starts_at: string;
           activity: string;
+          secondary_activity: string | null;
+          visibility: 'invite_only' | 'open';
           status: 'upcoming' | 'invited' | 'past' | 'joined' | 'cancelled';
           location_name: string;
           location_area: string | null;

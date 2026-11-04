@@ -20,8 +20,9 @@ For SQL Editor setup, open **SQL Editor**, create a query for each file, paste i
 1. Open **Authentication > Providers**.
 2. Turn on **Email**. Choose whether email confirmation is required for the environment.
 3. When credentials are available, turn on **Google**, **Apple**, and **Facebook**, then enter each provider's client ID, secret, and callback details shown by Supabase.
-4. In **Authentication > URL Configuration**, add the app redirect URL `winggirl://auth/callback`.
-5. For Expo Web development, also add the local web redirect URL shown by the running Expo app, such as `http://localhost:8082`.
+4. In **Authentication > URL Configuration**, add the app redirect URLs `winggirl://auth/callback` and `winggirl://reset-password`.
+5. For Expo Web development, add the exact redirect URL for the running app, such as `http://localhost:8081/reset-password`. Add your deployed web URL ending in `/reset-password` before using password recovery in production.
+6. In **Authentication > Email Templates > Reset Password**, make sure the reset link uses `{{ .ConfirmationURL }}` so Supabase applies the redirect URL requested by the app.
 
 The app exposes all four provider paths, but social sign-in remains unavailable until its provider is enabled here.
 

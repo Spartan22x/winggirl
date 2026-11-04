@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { Avatar, Card, Modal, PrimaryButton, Screen, SecondaryButton, Text } from '@/src/components';
-import { getConnectionCount, getProfile, getProfileInterests, saveProfile } from '@/src/data/api';
+import { getConnectionCount, getIncomingConnectionRequests, getProfile, getProfileInterests, saveProfile } from '@/src/data/api';
 import { useAuth } from '@/src/auth/AuthProvider';
 import { colors, radii, spacing } from '@/src/theme';
 
@@ -12,6 +13,8 @@ export default function ProfileScreen() {
   const [profile, setProfile] = useState<{ firstName: string; age: number | null; bio: string; avatarColor: string } | null>(null);
   const [interests, setInterests] = useState<string[]>([]);
   const [connectionCount, setConnectionCount] = useState(0);
+  const [pendingRequestCount, setPendingRequestCount] = useState<number | null>(null);
+  const [pendingRequestCountError, setPendingRequestCountError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -41,6 +44,22 @@ export default function ProfileScreen() {
   useEffect(() => {
     void loadProfile();
   }, [loadProfile]);
+
+  const loadPendingRequestCount = useCallback(async () => {
+    if (!user) return;
+    setPendingRequestCountError(false);
+    try {
+      const requests = await getIncomingConnectionRequests();
+      setPendingRequestCount(requests.length);
+    } catch {
+      setPendingRequestCount(null);
+      setPendingRequestCountError(true);
+    }
+  }, [user]);
+
+  useFocusEffect(useCallback(() => {
+    void loadPendingRequestCount();
+  }, [loadPendingRequestCount]));
 
   const openEditor = () => {
     if (!profile) return;
@@ -105,6 +124,22 @@ export default function ProfileScreen() {
       <Card style={styles.infoCard}>
         <Text variant="title" style={styles.sectionTitle}>Connections</Text>
         <Text style={styles.valueText}>{connectionCount} local connections</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={pendingRequestCount ? `Connections, ${pendingRequestCount} incoming requests` : 'Connections'}
+          onPress={() => router.push('/connections')}
+          style={({ pressed }) => [styles.connectionsLink, pressed && styles.connectionsLinkPressed]}
+        >
+          <Text variant="label" style={styles.connectionsLinkText}>View connections</Text>
+          {pendingRequestCount ? (
+            <View style={styles.requestBadge}>
+              <Text variant="label" style={styles.requestBadgeText}>{pendingRequestCount}</Text>
+            </View>
+          ) : null}
+        </Pressable>
+        {pendingRequestCountError ? (
+          <Text style={styles.pendingCountError}>Incoming request count is temporarily unavailable.</Text>
+        ) : null}
       </Card>
 
       <Card style={styles.infoCard}>
@@ -174,6 +209,12 @@ const styles = StyleSheet.create({
   tag: { backgroundColor: colors.surfaceMuted, borderRadius: radii.pill, paddingHorizontal: spacing.sm, paddingVertical: 6 },
   tagText: { color: colors.navyMuted },
   valueText: { color: colors.navyMuted },
+  connectionsLink: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm, paddingHorizontal: spacing.md, borderRadius: radii.pill, backgroundColor: colors.coralSoft },
+  connectionsLinkPressed: { opacity: 0.82 },
+  connectionsLinkText: { color: colors.coralDark },
+  requestBadge: { minWidth: 28, height: 28, paddingHorizontal: spacing.xs, borderRadius: radii.pill, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.coral },
+  requestBadgeText: { color: colors.white },
+  pendingCountError: { color: colors.coralDark, marginTop: spacing.sm },
   qrCard: { alignItems: 'center', padding: spacing.lg, marginBottom: spacing.lg },
   qrBox: { width: 96, height: 96, backgroundColor: colors.surfaceMuted, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.md },
   qrText: { fontWeight: '700', fontSize: 22, color: colors.navy },
