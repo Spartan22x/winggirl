@@ -6,6 +6,8 @@ import {
   joinOpenPlan,
   joinPlan,
   leavePlan,
+  updatePlan,
+  cancelPlan,
 } from '@/src/data/api';
 import { randomUUID } from 'expo-crypto';
 import { supabase } from '@/src/lib/supabase';
@@ -713,5 +715,121 @@ describe('leavePlan', () => {
     queueResponse('plan_members', { data: null, count: null, error });
 
     await expect(leavePlan('plan-8', 'profile-8')).rejects.toBe(error);
+  });
+});
+
+describe('updatePlan', () => {
+  it('updates the host plan with normalized fields and active-future filters', async () => {
+    queueResponse('plans', { data: { id: 'plan-9' }, error: null });
+
+    await expect(updatePlan('plan-9', 'host-9', {
+      title: '  Updated title  ',
+      startsAt: '2026-04-12T19:15:00-04:00',
+      activity: 'Brunch',
+      location: 'The Garden',
+      note: '  Wear comfortable shoes  ',
+    })).resolves.toBeUndefined();
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('plans');
+    expect(getCalls('plans', 'update').map((call) => call.args)).toEqual([
+      [{
+        title: 'Updated title',
+        starts_at: '2026-04-12T23:15:00.000Z',
+        activity: 'Brunch',
+        location_name: 'The Garden',
+        note: 'Wear comfortable shoes',
+      }],
+    ]);
+    expect(getCalls('plans', 'eq').map((call) => call.args)).toEqual([
+      ['id', 'plan-9'],
+      ['host_id', 'host-9'],
+    ]);
+    expect(getCalls('plans', 'in').map((call) => call.args)).toEqual([
+      ['status', ['upcoming', 'invited', 'joined']],
+    ]);
+    expect(getCalls('plans', 'gt').map((call) => call.args)).toEqual([
+      ['starts_at', '2026-04-05T12:34:56.000Z'],
+    ]);
+    expect(getCalls('plans', 'select').map((call) => call.args)).toEqual([['id']]);
+    expect(getCalls('plans', 'maybeSingle')).toHaveLength(1);
+  });
+
+  it('converts an empty note to null', async () => {
+    queueResponse('plans', { data: { id: 'plan-10' }, error: null });
+
+    await expect(updatePlan('plan-10', 'host-10', {
+      title: 'Title',
+      startsAt: '2026-04-12T19:15:00.000Z',
+      activity: 'Brunch',
+      location: 'The Garden',
+      note: '   ',
+    })).resolves.toBeUndefined();
+
+    expect(getCalls('plans', 'update')[0].args[0]).toMatchObject({ note: null });
+  });
+
+  it('throws when no matching active upcoming host plan is returned', async () => {
+    queueResponse('plans', { data: null, error: null });
+
+    await expect(updatePlan('plan-11', 'not-the-host', {
+      title: 'Title',
+      startsAt: '2026-04-12T19:15:00.000Z',
+      activity: 'Brunch',
+      location: 'The Garden',
+      note: '',
+    })).rejects.toThrow('Only the host can edit an active upcoming plan.');
+  });
+
+  it('propagates plan update errors', async () => {
+    const error = new Error('Plan update failed');
+    queueResponse('plans', { data: null, error });
+
+    await expect(updatePlan('plan-12', 'host-12', {
+      title: 'Title',
+      startsAt: '2026-04-12T19:15:00.000Z',
+      activity: 'Brunch',
+      location: 'The Garden',
+      note: '',
+    })).rejects.toBe(error);
+  });
+});
+
+describe('cancelPlan', () => {
+  it('cancels the host plan with active-future filters', async () => {
+    queueResponse('plans', { data: { id: 'plan-13' }, error: null });
+
+    await expect(cancelPlan('plan-13', 'host-13')).resolves.toBeUndefined();
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('plans');
+    expect(getCalls('plans', 'update').map((call) => call.args)).toEqual([
+      [{ status: 'cancelled' }],
+    ]);
+    expect(getCalls('plans', 'eq').map((call) => call.args)).toEqual([
+      ['id', 'plan-13'],
+      ['host_id', 'host-13'],
+    ]);
+    expect(getCalls('plans', 'in').map((call) => call.args)).toEqual([
+      ['status', ['upcoming', 'invited', 'joined']],
+    ]);
+    expect(getCalls('plans', 'gt').map((call) => call.args)).toEqual([
+      ['starts_at', '2026-04-05T12:34:56.000Z'],
+    ]);
+    expect(getCalls('plans', 'select').map((call) => call.args)).toEqual([['id']]);
+    expect(getCalls('plans', 'maybeSingle')).toHaveLength(1);
+  });
+
+  it('throws when no matching active upcoming host plan is returned', async () => {
+    queueResponse('plans', { data: null, error: null });
+
+    await expect(cancelPlan('plan-14', 'not-the-host')).rejects.toThrow(
+      'Only the host can cancel an active upcoming plan.',
+    );
+  });
+
+  it('propagates plan cancellation errors', async () => {
+    const error = new Error('Plan cancellation failed');
+    queueResponse('plans', { data: null, error });
+
+    await expect(cancelPlan('plan-15', 'host-15')).rejects.toBe(error);
   });
 });
