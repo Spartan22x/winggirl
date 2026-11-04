@@ -1,6 +1,6 @@
 import { randomUUID } from 'expo-crypto';
 import { supabase } from '@/src/lib/supabase';
-import type { AcceptedConnection, ConnectionProfile, ConnectionRelationshipStatus, ConnectionRequestResult, Conversation, IncomingConnectionRequest, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, PlanVisibility, UserProfile } from './types';
+import type { AcceptedConnection, ConnectionProfile, ConnectionRelationshipStatus, ConnectionRequestResult, Conversation, ConversationId, ConversationType, IncomingConnectionRequest, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, PlanVisibility, UserProfile } from './types';
 
 type ProfileRow = { id: string; first_name: string; age: number | null; bio: string | null; avatar_color: string };
 type AvailabilityRow = { profile_id: string; is_available: boolean };
@@ -421,13 +421,42 @@ export async function cancelPlan(planId: string, hostId: string) {
   if (!data) throw new Error('Only the host can cancel an active upcoming plan.');
 }
 
+/**
+ * Not production-ready until start_direct_conversation enforces accepted-connection eligibility server-side.
+ */
+export async function startDirectConversation(targetProfileId: string): Promise<ConversationId> {
+  const { data, error } = await supabase.rpc('start_direct_conversation', {
+    target_profile_id: targetProfileId,
+  });
+  if (error) throw error;
+  if (typeof data !== 'string') {
+    throw new Error('Starting a direct conversation returned an invalid conversation ID.');
+  }
+  return data;
+}
+
+export async function createGroupConversation(
+  memberProfileIds: string[],
+  targetPlanId: string,
+): Promise<ConversationId> {
+  const { data, error } = await supabase.rpc('create_group_conversation', {
+    member_profile_ids: memberProfileIds,
+    target_plan_id: targetPlanId,
+  });
+  if (error) throw error;
+  if (typeof data !== 'string') {
+    throw new Error('Creating a group conversation returned an invalid conversation ID.');
+  }
+  return data;
+}
+
 export async function getConversations(profileId: string): Promise<Conversation[]> {
   const { data: memberships, error: membershipError } = await supabase.from('conversation_members').select('conversation_id').eq('profile_id', profileId);
   if (membershipError) throw membershipError;
   const conversationIds = (memberships as { conversation_id: string }[]).map((membership) => membership.conversation_id);
   if (!conversationIds.length) return [];
   const [{ data: conversations, error: conversationError }, { data: messages, error: messageError }] = await Promise.all([
-    supabase.from('conversations').select('id, plan_id').in('id', conversationIds),
+    supabase.from('conversations').select('id, created_by, plan_id, conversation_type, direct_recipient_id').in('id', conversationIds),
     supabase.from('messages').select('id, conversation_id, sender_id, body, created_at').in('conversation_id', conversationIds).order('created_at'),
   ]);
   if (conversationError) throw conversationError;
@@ -436,10 +465,28 @@ export async function getConversations(profileId: string): Promise<Conversation[
   const { data: senders, error: senderError } = senderIds.length ? await supabase.from('profiles').select('id, first_name').in('id', senderIds) : { data: [], error: null };
   if (senderError) throw senderError;
   const names = new Map((senders as { id: string; first_name: string }[]).map((sender) => [sender.id, sender.first_name]));
-  return (conversations as { id: string; plan_id: string | null }[]).map((conversation) => {
+  return (conversations as {
+    id: ConversationId;
+    created_by: string;
+    plan_id: string | null;
+    conversation_type: ConversationType;
+    direct_recipient_id: string | null;
+  }[]).map((conversation) => {
     const conversationMessages = (messages as { id: string; conversation_id: string; sender_id: string; body: string; created_at: string }[]).filter((message) => message.conversation_id === conversation.id);
     const mappedMessages: Message[] = conversationMessages.map((message) => ({ id: message.id, sender: names.get(message.sender_id) ?? 'Wing', text: message.body, time: new Date(message.created_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }), me: message.sender_id === profileId }));
-    return { id: conversation.id, title: mappedMessages.find((message) => !message.me)?.sender ?? 'Conversation', participants: [], unread: 0, planRelated: Boolean(conversation.plan_id), lastMessage: mappedMessages.at(-1)?.text ?? '', lastTime: mappedMessages.at(-1)?.time ?? '', messages: mappedMessages };
+    return {
+      id: conversation.id,
+      createdBy: conversation.created_by,
+      planId: conversation.plan_id,
+      conversationType: conversation.conversation_type,
+      directRecipientId: conversation.direct_recipient_id,
+      title: mappedMessages.find((message) => !message.me)?.sender ?? 'Conversation',
+      unread: 0,
+      planRelated: Boolean(conversation.plan_id),
+      lastMessage: mappedMessages.at(-1)?.text ?? '',
+      lastTime: mappedMessages.at(-1)?.time ?? '',
+      messages: mappedMessages,
+    };
   });
 }
 

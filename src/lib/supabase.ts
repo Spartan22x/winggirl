@@ -78,7 +78,14 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['plan_members']['Insert']>;
       };
       conversations: {
-        Row: { id: string; created_by: string; plan_id: string | null; created_at: string };
+        Row: {
+          id: string;
+          created_by: string;
+          plan_id: string | null;
+          conversation_type: 'direct' | 'group';
+          direct_recipient_id: string | null;
+          created_at: string;
+        };
         Insert: Omit<Database['public']['Tables']['conversations']['Row'], 'id' | 'created_at'>;
         Update: Partial<Database['public']['Tables']['conversations']['Insert']>;
       };
@@ -115,6 +122,14 @@ export type Database = {
       };
       respond_to_connection: {
         Args: { requester_profile_id: string; accept_request: boolean };
+        Returns: string;
+      };
+      start_direct_conversation: {
+        Args: { target_profile_id: string };
+        Returns: string;
+      };
+      create_group_conversation: {
+        Args: { member_profile_ids: string[]; target_plan_id: string };
         Returns: string;
       };
     };

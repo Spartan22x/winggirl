@@ -105,10 +105,16 @@ export type Message = {
   me?: boolean;
 };
 
+export type ConversationId = string;
+export type ConversationType = 'direct' | 'group';
+
 export type Conversation = {
-  id: string;
+  id: ConversationId;
+  createdBy: string;
+  planId: string | null;
+  conversationType: ConversationType;
+  directRecipientId: string | null;
   title: string;
-  participants: string[];
   unread: number;
   planRelated?: boolean;
   lastMessage: string;
