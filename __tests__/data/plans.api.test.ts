@@ -1,13 +1,19 @@
 import {
+  createPlan,
   getPlanDetails,
   getPlanOverlapCandidates,
   getPlans,
+  joinOpenPlan,
+  joinPlan,
+  leavePlan,
 } from '@/src/data/api';
+import { randomUUID } from 'expo-crypto';
 import { supabase } from '@/src/lib/supabase';
 
 type MockResponse = {
   data: unknown;
   error: Error | null;
+  count?: number | null;
 };
 
 type QueryCall = {
@@ -21,6 +27,7 @@ const mockQueryCalls: QueryCall[] = [];
 const mockSupabase = supabase as unknown as {
   from: jest.Mock;
 };
+const mockRandomUUID = randomUUID as jest.Mock;
 
 class MockQuery {
   constructor(
@@ -53,6 +60,21 @@ class MockQuery {
     return this;
   }
 
+  insert(...args: unknown[]) {
+    mockQueryCalls.push({ table: this.table, method: 'insert', args });
+    return this;
+  }
+
+  update(...args: unknown[]) {
+    mockQueryCalls.push({ table: this.table, method: 'update', args });
+    return this;
+  }
+
+  delete(...args: unknown[]) {
+    mockQueryCalls.push({ table: this.table, method: 'delete', args });
+    return this;
+  }
+
   maybeSingle() {
     mockQueryCalls.push({ table: this.table, method: 'maybeSingle', args: [] });
     return Promise.resolve(this.response);
@@ -70,6 +92,10 @@ jest.mock('@/src/lib/supabase', () => ({
   supabase: {
     from: jest.fn(),
   },
+}));
+
+jest.mock('expo-crypto', () => ({
+  randomUUID: jest.fn(),
 }));
 
 function queueResponse(table: string, response: MockResponse) {
@@ -456,5 +482,236 @@ describe('getPlanOverlapCandidates', () => {
     queueResponse('plans', { data: null, error });
 
     await expect(getPlanOverlapCandidates('current-user')).rejects.toBe(error);
+  });
+});
+
+describe('createPlan', () => {
+  it('creates an invite-only plan with a generated ID and normalized optional fields', async () => {
+    mockRandomUUID.mockReturnValue('generated-plan-id');
+    queueResponse('plans', { data: null, error: null });
+    queueResponse('plan_members', { data: null, error: null });
+
+    await expect(createPlan('host-profile', {
+      startsAt: '2026-04-10T18:30:00-04:00',
+      activity: ' Dinner ',
+      secondaryActivity: '  Live music  ',
+      invitees: [
+        { profile_id: 'invitee-1', status: 'invited' },
+        { profile_id: 'invitee-2', status: 'invited' },
+      ],
+      location: 'The Cafe',
+      note: '  Bring a jacket  ',
+      visibility: 'invite_only',
+    })).resolves.toEqual({ id: 'generated-plan-id' });
+
+    expect(mockRandomUUID).toHaveBeenCalledTimes(1);
+    expect(mockSupabase.from).toHaveBeenNthCalledWith(1, 'plans');
+    expect(getCalls('plans', 'insert').map((call) => call.args)).toEqual([
+      [{
+        id: 'generated-plan-id',
+        host_id: 'host-profile',
+        title: ' Dinner  with the girls',
+        starts_at: '2026-04-10T22:30:00.000Z',
+        activity: ' Dinner ',
+        secondary_activity: 'Live music',
+        status: 'upcoming',
+        visibility: 'invite_only',
+        location_name: 'The Cafe',
+        note: 'Bring a jacket',
+      }],
+    ]);
+    expect(mockSupabase.from).toHaveBeenNthCalledWith(2, 'plan_members');
+    expect(getCalls('plan_members', 'insert').map((call) => call.args)).toEqual([
+      [[
+        { plan_id: 'generated-plan-id', profile_id: 'invitee-1', status: 'invited' },
+        { plan_id: 'generated-plan-id', profile_id: 'invitee-2', status: 'invited' },
+      ]],
+    ]);
+  });
+
+  it('uses explicit open visibility and does not insert invitees', async () => {
+    mockRandomUUID.mockReturnValue('open-plan-id');
+    queueResponse('plans', { data: null, error: null });
+
+    await expect(createPlan('host-profile', {
+      startsAt: '2026-04-10T18:30:00.000Z',
+      activity: 'Dinner',
+      invitees: [{ profile_id: 'invitee-1', status: 'invited' }],
+      location: 'The Cafe',
+      visibility: 'open',
+    })).resolves.toEqual({ id: 'open-plan-id' });
+
+    expect(getCalls('plans', 'insert')[0].args[0]).toMatchObject({
+      visibility: 'open',
+      secondary_activity: null,
+      note: null,
+    });
+    expect(mockSupabase.from).toHaveBeenCalledTimes(1);
+    expect(getCalls('plan_members', 'insert')).toHaveLength(0);
+  });
+
+  it('defaults visibility to invite-only but skips invitees when visibility is omitted', async () => {
+    mockRandomUUID.mockReturnValue('default-visibility-plan-id');
+    queueResponse('plans', { data: null, error: null });
+
+    await expect(createPlan('host-profile', {
+      startsAt: '2026-04-10T18:30:00.000Z',
+      activity: 'Dinner',
+      invitees: [{ profile_id: 'invitee-1', status: 'invited' }],
+      location: 'The Cafe',
+    })).resolves.toEqual({ id: 'default-visibility-plan-id' });
+
+    expect(getCalls('plans', 'insert')[0].args[0]).toMatchObject({
+      visibility: 'invite_only',
+    });
+    expect(mockSupabase.from).toHaveBeenCalledTimes(1);
+    expect(getCalls('plan_members', 'insert')).toHaveLength(0);
+  });
+
+  it('supports explicit invite-only visibility and skips member insertion for an empty invitee list', async () => {
+    mockRandomUUID.mockReturnValue('empty-invites-plan-id');
+    queueResponse('plans', { data: null, error: null });
+
+    await expect(createPlan('host-profile', {
+      startsAt: '2026-04-10T18:30:00.000Z',
+      activity: 'Dinner',
+      invitees: [],
+      location: 'The Cafe',
+      visibility: 'invite_only',
+      note: '   ',
+      secondaryActivity: '  ',
+    })).resolves.toEqual({ id: 'empty-invites-plan-id' });
+
+    expect(getCalls('plans', 'insert')[0].args[0]).toMatchObject({
+      visibility: 'invite_only',
+      secondary_activity: null,
+      note: null,
+    });
+    expect(mockSupabase.from).toHaveBeenCalledTimes(1);
+    expect(getCalls('plan_members', 'insert')).toHaveLength(0);
+  });
+
+  it('propagates plan insert errors without attempting invitee insertion', async () => {
+    const error = new Error('Plan insert failed');
+    mockRandomUUID.mockReturnValue('failed-plan-id');
+    queueResponse('plans', { data: null, error });
+
+    await expect(createPlan('host-profile', {
+      startsAt: '2026-04-10T18:30:00.000Z',
+      activity: 'Dinner',
+      invitees: [{ profile_id: 'invitee-1', status: 'invited' }],
+      location: 'The Cafe',
+    })).rejects.toBe(error);
+
+    expect(getCalls('plans', 'insert')).toHaveLength(1);
+    expect(getCalls('plan_members', 'insert')).toHaveLength(0);
+  });
+
+  it('propagates invitee insert errors after successfully inserting the plan', async () => {
+    const error = new Error('Invitee insert failed');
+    mockRandomUUID.mockReturnValue('partial-plan-id');
+    queueResponse('plans', { data: null, error: null });
+    queueResponse('plan_members', { data: null, error });
+
+    await expect(createPlan('host-profile', {
+      startsAt: '2026-04-10T18:30:00.000Z',
+      activity: 'Dinner',
+      invitees: [{ profile_id: 'invitee-1', status: 'invited' }],
+      location: 'The Cafe',
+      visibility: 'invite_only',
+    })).rejects.toBe(error);
+
+    expect(getCalls('plans', 'insert')).toHaveLength(1);
+    expect(getCalls('plan_members', 'insert')).toHaveLength(1);
+  });
+});
+
+describe('joinPlan', () => {
+  it('updates only the matching invited membership to joined', async () => {
+    queueResponse('plan_members', { data: { plan_id: 'plan-1' }, error: null });
+
+    await expect(joinPlan('plan-1', 'profile-1')).resolves.toBeUndefined();
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('plan_members');
+    expect(getCalls('plan_members', 'update').map((call) => call.args)).toEqual([
+      [{ status: 'joined' }],
+    ]);
+    expect(getCalls('plan_members', 'eq').map((call) => call.args)).toEqual([
+      ['plan_id', 'plan-1'],
+      ['profile_id', 'profile-1'],
+      ['status', 'invited'],
+    ]);
+    expect(getCalls('plan_members', 'select').map((call) => call.args)).toEqual([
+      ['plan_id'],
+    ]);
+    expect(getCalls('plan_members', 'maybeSingle')).toHaveLength(1);
+  });
+
+  it('throws when no matching invitation is available', async () => {
+    queueResponse('plan_members', { data: null, error: null });
+
+    await expect(joinPlan('plan-2', 'profile-2')).rejects.toThrow(
+      'This invitation is no longer available.',
+    );
+  });
+
+  it('propagates membership update errors', async () => {
+    const error = new Error('Membership update failed');
+    queueResponse('plan_members', { data: null, error });
+
+    await expect(joinPlan('plan-3', 'profile-3')).rejects.toBe(error);
+  });
+});
+
+describe('joinOpenPlan', () => {
+  it('inserts a joined membership with the requested plan and profile IDs', async () => {
+    queueResponse('plan_members', { data: null, error: null });
+
+    await expect(joinOpenPlan('open-plan', 'profile-4')).resolves.toBeUndefined();
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('plan_members');
+    expect(getCalls('plan_members', 'insert').map((call) => call.args)).toEqual([
+      [{ plan_id: 'open-plan', profile_id: 'profile-4', status: 'joined' }],
+    ]);
+  });
+
+  it('propagates membership insert errors', async () => {
+    const error = new Error('Open plan membership insert failed');
+    queueResponse('plan_members', { data: null, error });
+
+    await expect(joinOpenPlan('open-plan', 'profile-5')).rejects.toBe(error);
+  });
+});
+
+describe('leavePlan', () => {
+  it('deletes the matching joined membership when the delete count is positive', async () => {
+    queueResponse('plan_members', { data: null, count: 1, error: null });
+
+    await expect(leavePlan('plan-6', 'profile-6')).resolves.toBeUndefined();
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('plan_members');
+    expect(getCalls('plan_members', 'delete').map((call) => call.args)).toEqual([
+      [{ count: 'exact' }],
+    ]);
+    expect(getCalls('plan_members', 'eq').map((call) => call.args)).toEqual([
+      ['plan_id', 'plan-6'],
+      ['profile_id', 'profile-6'],
+      ['status', 'joined'],
+    ]);
+  });
+
+  it.each([0, null])('throws when the delete count is %s', async (count) => {
+    queueResponse('plan_members', { data: null, count, error: null });
+
+    await expect(leavePlan('plan-7', 'profile-7')).rejects.toThrow(
+      'You are not participating in this plan.',
+    );
+  });
+
+  it('propagates membership delete errors', async () => {
+    const error = new Error('Membership delete failed');
+    queueResponse('plan_members', { data: null, count: null, error });
+
+    await expect(leavePlan('plan-8', 'profile-8')).rejects.toBe(error);
   });
 });
