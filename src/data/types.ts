@@ -99,8 +99,11 @@ export type PlanDetails = PlanItem & {
 
 export type Message = {
   id: string;
+  conversationId: ConversationId;
+  senderId: string;
   sender: string;
   text: string;
+  createdAt: string;
   time: string;
   me?: boolean;
 };
@@ -108,16 +111,37 @@ export type Message = {
 export type ConversationId = string;
 export type ConversationType = 'direct' | 'group';
 
+export type ConversationParticipant = {
+  profileId: string;
+  firstName: string | null;
+  profileImageUrl: string | null;
+  avatarColor: string | null;
+};
+
 export type Conversation = {
   id: ConversationId;
   createdBy: string;
   planId: string | null;
   conversationType: ConversationType;
   directRecipientId: string | null;
+  otherParticipant: ConversationParticipant | null;
+  participants: ConversationParticipant[];
   title: string;
   unread: number;
   planRelated?: boolean;
   lastMessage: string;
   lastTime: string;
+  latestMessage: Message | null;
   messages: Message[];
+};
+
+export type MessageCursor = {
+  createdAt: string;
+  id: string;
+};
+
+export type MessagePage = {
+  messages: Message[];
+  hasMore: boolean;
+  nextCursor: MessageCursor | null;
 };

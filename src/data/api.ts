@@ -1,6 +1,6 @@
 import { randomUUID } from 'expo-crypto';
 import { supabase } from '@/src/lib/supabase';
-import type { AcceptedConnection, ConnectionProfile, ConnectionRelationshipStatus, ConnectionRequestResult, Conversation, ConversationId, ConversationType, IncomingConnectionRequest, Message, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, PlanVisibility, UserProfile } from './types';
+import type { AcceptedConnection, ConnectionProfile, ConnectionRelationshipStatus, ConnectionRequestResult, Conversation, ConversationId, ConversationParticipant, ConversationType, IncomingConnectionRequest, Message, MessageCursor, MessagePage, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, PlanVisibility, UserProfile } from './types';
 
 type ProfileRow = { id: string; first_name: string; age: number | null; bio: string | null; avatar_color: string };
 type AvailabilityRow = { profile_id: string; is_available: boolean };
@@ -15,10 +15,12 @@ type ConnectionRow = {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-async function getAuthenticatedProfileId() {
+async function getAuthenticatedProfileId(
+  errorMessage = 'You must be signed in to access connections.',
+) {
   const { data: { user }, error } = await supabase.auth.getUser();
   if (error) throw error;
-  if (!user) throw new Error('You must be signed in to access connections.');
+  if (!user) throw new Error(errorMessage);
   return user.id;
 }
 
@@ -450,47 +452,236 @@ export async function createGroupConversation(
   return data;
 }
 
-export async function getConversations(profileId: string): Promise<Conversation[]> {
-  const { data: memberships, error: membershipError } = await supabase.from('conversation_members').select('conversation_id').eq('profile_id', profileId);
-  if (membershipError) throw membershipError;
-  const conversationIds = (memberships as { conversation_id: string }[]).map((membership) => membership.conversation_id);
-  if (!conversationIds.length) return [];
-  const [{ data: conversations, error: conversationError }, { data: messages, error: messageError }] = await Promise.all([
-    supabase.from('conversations').select('id, created_by, plan_id, conversation_type, direct_recipient_id').in('id', conversationIds),
-    supabase.from('messages').select('id, conversation_id, sender_id, body, created_at').in('conversation_id', conversationIds).order('created_at'),
-  ]);
-  if (conversationError) throw conversationError;
-  if (messageError) throw messageError;
-  const senderIds = [...new Set((messages as { sender_id: string }[]).map((message) => message.sender_id))];
-  const { data: senders, error: senderError } = senderIds.length ? await supabase.from('profiles').select('id, first_name').in('id', senderIds) : { data: [], error: null };
-  if (senderError) throw senderError;
-  const names = new Map((senders as { id: string; first_name: string }[]).map((sender) => [sender.id, sender.first_name]));
-  return (conversations as {
-    id: ConversationId;
-    created_by: string;
-    plan_id: string | null;
-    conversation_type: ConversationType;
-    direct_recipient_id: string | null;
-  }[]).map((conversation) => {
-    const conversationMessages = (messages as { id: string; conversation_id: string; sender_id: string; body: string; created_at: string }[]).filter((message) => message.conversation_id === conversation.id);
-    const mappedMessages: Message[] = conversationMessages.map((message) => ({ id: message.id, sender: names.get(message.sender_id) ?? 'Wing', text: message.body, time: new Date(message.created_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }), me: message.sender_id === profileId }));
-    return {
-      id: conversation.id,
-      createdBy: conversation.created_by,
-      planId: conversation.plan_id,
-      conversationType: conversation.conversation_type,
-      directRecipientId: conversation.direct_recipient_id,
-      title: mappedMessages.find((message) => !message.me)?.sender ?? 'Conversation',
-      unread: 0,
-      planRelated: Boolean(conversation.plan_id),
-      lastMessage: mappedMessages.at(-1)?.text ?? '',
-      lastTime: mappedMessages.at(-1)?.time ?? '',
-      messages: mappedMessages,
-    };
-  });
+type ConversationListRow = {
+  id: ConversationId;
+  created_by: string;
+  plan_id: string | null;
+  conversation_type: ConversationType;
+  direct_recipient_id: string | null;
+  conversation_members: {
+    profile_id: string;
+    profiles: {
+      first_name: string;
+      avatar_color: string;
+    } | null;
+  }[];
+  messages: {
+    id: string;
+    conversation_id: ConversationId;
+    sender_id: string;
+    body: string;
+    created_at: string;
+  }[];
+};
+
+type MessageHistoryRow = {
+  id: string;
+  conversation_id: ConversationId;
+  sender_id: string;
+  body: string;
+  created_at: string;
+  profiles: {
+    first_name: string;
+  } | null;
+};
+
+const formatMessageTime = (createdAt: string) =>
+  new Date(createdAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
+function mapMessage(
+  row: MessageHistoryRow,
+  currentProfileId: string,
+): Message {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    senderId: row.sender_id,
+    sender: row.profiles?.first_name ?? 'Wing',
+    text: row.body,
+    createdAt: row.created_at,
+    time: formatMessageTime(row.created_at),
+    me: row.sender_id === currentProfileId,
+  };
 }
 
-export async function sendMessage(profileId: string, conversationId: string, body: string) {
-  const { error } = await supabase.from('messages').insert({ conversation_id: conversationId, sender_id: profileId, body });
+function compareConversationsByActivity(left: Conversation, right: Conversation) {
+  if (left.latestMessage && !right.latestMessage) return -1;
+  if (!left.latestMessage && right.latestMessage) return 1;
+  if (left.latestMessage && right.latestMessage) {
+    const timeDifference =
+      Date.parse(right.latestMessage.createdAt) - Date.parse(left.latestMessage.createdAt);
+    if (timeDifference !== 0) return timeDifference;
+
+    const messageIdDifference = right.latestMessage.id.localeCompare(left.latestMessage.id);
+    if (messageIdDifference !== 0) return messageIdDifference;
+  }
+  return right.id.localeCompare(left.id);
+}
+
+/**
+ * The optional profile ID is retained for existing callers but ignored; the session is authoritative.
+ */
+export async function getConversations(_legacyProfileId?: string): Promise<Conversation[]> {
+  const profileId = await getAuthenticatedProfileId('You must be signed in to access messages.');
+  const { data: memberships, error: membershipError } = await supabase
+    .from('conversation_members')
+    .select('conversation_id')
+    .eq('profile_id', profileId);
+  if (membershipError) throw membershipError;
+  const conversationIds = (memberships as { conversation_id: string }[] | null ?? [])
+    .map((membership) => membership.conversation_id);
+  if (!conversationIds.length) return [];
+
+  const { data, error } = await supabase
+    .from('conversations')
+    .select(`
+      id,
+      created_by,
+      plan_id,
+      conversation_type,
+      direct_recipient_id,
+      conversation_members(
+        profile_id,
+        profiles(first_name, avatar_color)
+      ),
+      messages(id, conversation_id, sender_id, body, created_at)
+    `)
+    .in('id', conversationIds)
+    .order('created_at', { ascending: false, referencedTable: 'messages' })
+    .order('id', { ascending: false, referencedTable: 'messages' })
+    .limit(1, { referencedTable: 'messages' });
+  if (error) throw error;
+
+  const conversations = ((data ?? []) as unknown as ConversationListRow[]).map((row) => {
+    const participants: ConversationParticipant[] = row.conversation_members
+      .map((member) => ({
+        profileId: member.profile_id,
+        firstName: member.profiles?.first_name ?? null,
+        profileImageUrl: null,
+        avatarColor: member.profiles?.avatar_color ?? null,
+      }))
+      .sort((left, right) => left.profileId.localeCompare(right.profileId));
+    const otherProfileId = row.created_by === profileId
+      ? row.direct_recipient_id
+      : row.created_by;
+    const otherParticipant = row.conversation_type === 'direct'
+      ? participants.find((participant) => participant.profileId === otherProfileId)
+        ?? (otherProfileId
+          ? {
+            profileId: otherProfileId,
+            firstName: null,
+            profileImageUrl: null,
+            avatarColor: null,
+          }
+          : null)
+      : null;
+    const latestMessageRow = row.messages[0] as MessageHistoryRow | undefined;
+    const mappedLatestMessage = latestMessageRow
+      ? mapMessage(latestMessageRow, profileId)
+      : null;
+    const latestMessage = mappedLatestMessage
+      ? {
+        ...mappedLatestMessage,
+        sender: participants.find(
+          (participant) => participant.profileId === mappedLatestMessage.senderId,
+        )?.firstName ?? mappedLatestMessage.sender,
+      }
+      : null;
+    return {
+      id: row.id,
+      createdBy: row.created_by,
+      planId: row.plan_id,
+      conversationType: row.conversation_type,
+      directRecipientId: row.direct_recipient_id,
+      otherParticipant,
+      participants,
+      title: row.conversation_type === 'direct'
+        ? otherParticipant?.firstName ?? 'Conversation'
+        : 'Group conversation',
+      unread: 0,
+      planRelated: Boolean(row.plan_id),
+      lastMessage: latestMessage?.text ?? '',
+      lastTime: latestMessage?.time ?? '',
+      latestMessage,
+      messages: latestMessage ? [latestMessage] : [],
+    };
+  });
+  return conversations.sort(compareConversationsByActivity);
+}
+
+const DEFAULT_MESSAGE_PAGE_SIZE = 30;
+const MAX_MESSAGE_PAGE_SIZE = 100;
+const messageCursorTimestampPattern =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const messageCursorIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export async function getConversationMessages(
+  conversationId: ConversationId,
+  options: { pageSize?: number; before?: MessageCursor } = {},
+): Promise<MessagePage> {
+  const profileId = await getAuthenticatedProfileId('You must be signed in to access messages.');
+  const pageSize = options.pageSize ?? DEFAULT_MESSAGE_PAGE_SIZE;
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > MAX_MESSAGE_PAGE_SIZE) {
+    throw new RangeError(`Message page size must be an integer from 1 to ${MAX_MESSAGE_PAGE_SIZE}.`);
+  }
+  if (options.before && (
+    !messageCursorTimestampPattern.test(options.before.createdAt)
+    || Number.isNaN(Date.parse(options.before.createdAt))
+    || !messageCursorIdPattern.test(options.before.id)
+  )) {
+    throw new Error('The message pagination cursor is invalid.');
+  }
+
+  let query = supabase
+    .from('messages')
+    .select('id, conversation_id, sender_id, body, created_at, profiles(first_name)')
+    .eq('conversation_id', conversationId);
+  if (options.before) {
+    query = query.or(
+      `created_at.lt.${options.before.createdAt},and(created_at.eq.${options.before.createdAt},id.lt.${options.before.id})`,
+    );
+  }
+  const { data, error } = await query
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(pageSize + 1);
+  if (error) throw error;
+
+  const rows = (data ?? []) as unknown as MessageHistoryRow[];
+  const hasMore = rows.length > pageSize;
+  const messages = rows
+    .slice(0, pageSize)
+    .map((row) => mapMessage(row, profileId))
+    .reverse();
+  const oldestMessage = messages[0];
+  return {
+    messages,
+    hasMore,
+    nextCursor: hasMore && oldestMessage
+      ? { createdAt: oldestMessage.createdAt, id: oldestMessage.id }
+      : null,
+  };
+}
+
+export async function sendMessage(conversationId: ConversationId, body: string): Promise<void>;
+export async function sendMessage(
+  _legacyProfileId: string,
+  conversationId: ConversationId,
+  body: string,
+): Promise<void>;
+export async function sendMessage(
+  firstArgument: string,
+  secondArgument: string,
+  legacyBody?: string,
+): Promise<void> {
+  const profileId = await getAuthenticatedProfileId('You must be signed in to send messages.');
+  const conversationId = legacyBody === undefined ? firstArgument : secondArgument;
+  const body = legacyBody === undefined ? secondArgument : legacyBody;
+  const { error } = await supabase.from('messages').insert({
+    conversation_id: conversationId,
+    sender_id: profileId,
+    body,
+  });
   if (error) throw error;
 }
