@@ -116,11 +116,17 @@ VALUES
   );
 
 INSERT INTO public.connections (requester_id, addressee_id, status)
-VALUES (
-  '00000000-0000-4000-8000-000000000701',
-  '00000000-0000-4000-8000-000000000702',
-  'accepted'
-);
+VALUES
+  (
+    '00000000-0000-4000-8000-000000000701',
+    '00000000-0000-4000-8000-000000000702',
+    'accepted'
+  ),
+  (
+    '00000000-0000-4000-8000-000000000701',
+    '00000000-0000-4000-8000-000000000703',
+    'accepted'
+  );
 
 INSERT INTO public.plans (
   id,
@@ -167,6 +173,28 @@ CREATE TEMP TABLE fixture_conversations (
   conversation_id uuid NOT NULL
 );
 GRANT SELECT, INSERT ON fixture_conversations TO authenticated;
+
+WITH group_conversation AS (
+  INSERT INTO public.conversations (created_by, plan_id, conversation_type)
+  VALUES (
+    '00000000-0000-4000-8000-000000000701',
+    '00000000-0000-4000-8000-000000000711',
+    'group'
+  )
+  RETURNING id
+)
+INSERT INTO fixture_conversations (fixture_name, conversation_id)
+SELECT 'group_abc', id FROM group_conversation;
+
+INSERT INTO public.conversation_members (conversation_id, profile_id)
+SELECT conversation_id, members.profile_id
+FROM fixture_conversations
+CROSS JOIN (VALUES
+  ('00000000-0000-4000-8000-000000000701'::uuid),
+  ('00000000-0000-4000-8000-000000000702'::uuid),
+  ('00000000-0000-4000-8000-000000000703'::uuid)
+) AS members(profile_id)
+WHERE fixture_name = 'group_abc';
 
 CREATE FUNCTION pg_temp.try_message_insert(
   target_conversation_id uuid,
@@ -257,7 +285,7 @@ SELECT ok(
   )
   AND NOT has_function_privilege(
     'anon',
-    'public.create_group_conversation(uuid[],uuid)',
+    'public.create_group_conversation(uuid[])',
     'EXECUTE'
   ),
   'Anonymous cannot execute helpers or messaging RPCs'
@@ -282,18 +310,6 @@ FROM public.conversations
 WHERE conversation_type = 'direct'
   AND created_by = auth.uid()
   AND direct_recipient_id = '00000000-0000-4000-8000-000000000702'::uuid;
-
-INSERT INTO pg_temp.fixture_conversations (fixture_name, conversation_id)
-SELECT
-  'group_abc',
-  public.create_group_conversation(
-    ARRAY[
-      '00000000-0000-4000-8000-000000000701'::uuid,
-      '00000000-0000-4000-8000-000000000702'::uuid,
-      '00000000-0000-4000-8000-000000000703'::uuid
-    ],
-    '00000000-0000-4000-8000-000000000711'::uuid
-  );
 
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
@@ -397,15 +413,13 @@ SELECT is(
 SELECT throws_ok(
   $$SELECT public.create_group_conversation(
       ARRAY[
-        '00000000-0000-4000-8000-000000000701'::uuid,
         '00000000-0000-4000-8000-000000000702'::uuid,
         '00000000-0000-4000-8000-000000000704'::uuid
-      ],
-      '00000000-0000-4000-8000-000000000711'::uuid
+      ]
     )$$,
   '42501',
-  'Group conversation participants must belong to the plan.',
-  'Group creation still rejects an ineligible plan member'
+  'One or more selected connections are unavailable.',
+  'Group creation rejects a profile without an accepted connection'
 );
 
 RESET ROLE;
@@ -605,11 +619,9 @@ SELECT throws_ok(
 SELECT throws_ok(
   $$SELECT public.create_group_conversation(
       ARRAY[
-        '00000000-0000-4000-8000-000000000701'::uuid,
         '00000000-0000-4000-8000-000000000702'::uuid,
         '00000000-0000-4000-8000-000000000703'::uuid
-      ],
-      '00000000-0000-4000-8000-000000000711'::uuid
+      ]
     )$$,
   '42501',
   'permission denied for function create_group_conversation',

@@ -8,6 +8,7 @@ import {
   getAcceptedConnections,
   getIncomingConnectionRequests,
   respondToConnectionRequest,
+  createGroupConversation,
   startDirectConversation,
 } from '@/src/data/api';
 import type { AcceptedConnection, IncomingConnectionRequest } from '@/src/data/types';
@@ -27,6 +28,10 @@ export default function ConnectionsScreen() {
   const [messageActionError, setMessageActionError] = useState<string | null>(null);
   const [processingMessageProfileId, setProcessingMessageProfileId] = useState<string | null>(null);
   const processingMessageProfileIdRef = useRef<string | null>(null);
+  const [selectedGroupInviteeIds, setSelectedGroupInviteeIds] = useState<Set<string>>(() => new Set());
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [groupCreationError, setGroupCreationError] = useState<string | null>(null);
+  const creatingGroupRef = useRef(false);
 
   const loadConnections = useCallback(async () => {
     if (!user) return;
@@ -39,6 +44,10 @@ export default function ConnectionsScreen() {
       ]);
       setIncomingRequests(nextRequests);
       setConnections(nextConnections);
+      setSelectedGroupInviteeIds((selectedIds) => new Set(
+        [...selectedIds].filter((profileId) =>
+          nextConnections.some((connection) => connection.profileId === profileId)),
+      ));
       setHasLoaded(true);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : 'We could not load your connections. Please try again.');
@@ -85,6 +94,50 @@ export default function ConnectionsScreen() {
     } finally {
       processingMessageProfileIdRef.current = null;
       setProcessingMessageProfileId(null);
+    }
+  };
+
+  const handleToggleGroupInvitee = (profileId: string) => {
+    if (creatingGroupRef.current || !user || profileId === user.id) return;
+    setGroupCreationError(null);
+    setSelectedGroupInviteeIds((selectedIds) => {
+      const nextIds = new Set(selectedIds);
+      if (nextIds.has(profileId)) nextIds.delete(profileId);
+      else nextIds.add(profileId);
+      return nextIds;
+    });
+  };
+
+  const handleCreateGroup = async () => {
+    if (!user || creatingGroupRef.current || selectedGroupInviteeIds.size < 2) return;
+    const acceptedProfileIds = new Set(connections.map((connection) => connection.profileId));
+    const inviteeProfileIds = [...selectedGroupInviteeIds]
+      .filter((profileId) => profileId !== user.id && acceptedProfileIds.has(profileId));
+    if (inviteeProfileIds.length < 2) {
+      setGroupCreationError('Select at least two current accepted connections to create a group.');
+      return;
+    }
+
+    creatingGroupRef.current = true;
+    setCreatingGroup(true);
+    setGroupCreationError(null);
+    try {
+      const conversationId = await createGroupConversation(inviteeProfileIds);
+      setSelectedGroupInviteeIds(new Set());
+      router.navigate({
+        pathname: '/(tabs)/messages',
+        params: { conversationId },
+      });
+    } catch (error) {
+      const eligibilityChanged = error instanceof Error
+        && error.message === 'One or more selected connections are unavailable.';
+      setGroupCreationError(eligibilityChanged
+        ? 'One or more selected connections are no longer eligible. Refresh your connections and try again.'
+        : 'We couldn’t create this group. Please try again.');
+      if (eligibilityChanged) void loadConnections();
+    } finally {
+      creatingGroupRef.current = false;
+      setCreatingGroup(false);
     }
   };
 
@@ -142,6 +195,21 @@ export default function ConnectionsScreen() {
 
       <View style={styles.connectionsSection}>
         <SectionHeader title="My Connections" />
+        <Card style={styles.groupCard}>
+          <Text variant="title">Create a group</Text>
+          <Text style={styles.groupCount}>
+            {selectedGroupInviteeIds.size} invitees selected (choose at least 2)
+          </Text>
+          {groupCreationError ? (
+            <Text accessibilityRole="alert" style={styles.errorText}>{groupCreationError}</Text>
+          ) : null}
+          <PrimaryButton
+            label={creatingGroup ? 'Creating group…' : 'Create group'}
+            onPress={() => { void handleCreateGroup(); }}
+            disabled={creatingGroup || selectedGroupInviteeIds.size < 2}
+            style={styles.createGroupButton}
+          />
+        </Card>
         {messageActionError ? (
           <Text accessibilityRole="alert" style={styles.errorText}>{messageActionError}</Text>
         ) : null}
@@ -151,7 +219,11 @@ export default function ConnectionsScreen() {
               key={connection.profileId}
               connection={connection}
               busy={processingMessageProfileId === connection.profileId || Boolean(processingMessageProfileId)}
+              groupSelected={selectedGroupInviteeIds.has(connection.profileId)}
+              canSelectGroup={connection.profileId !== user.id}
               onMessage={() => { void handleStartMessage(connection.profileId); }}
+              onToggleGroup={() => handleToggleGroupInvitee(connection.profileId)}
+              groupBusy={creatingGroup}
             />
           ))
         ) : !loadError && hasLoaded ? (
@@ -202,11 +274,19 @@ function RequestCard({
 function ConnectionCard({
   connection,
   busy,
+  groupSelected,
+  canSelectGroup,
+  groupBusy,
   onMessage,
+  onToggleGroup,
 }: {
   connection: AcceptedConnection;
   busy: boolean;
+  groupSelected: boolean;
+  canSelectGroup: boolean;
+  groupBusy: boolean;
   onMessage: () => void;
+  onToggleGroup: () => void;
 }) {
   const profile = connection.profile;
   return (
@@ -225,12 +305,22 @@ function ConnectionCard({
             {profile ? 'A new connection in your circle.' : 'This profile is no longer available.'}
           </Text>
         </View>
+      </View>
+      <View style={styles.connectionActions}>
         <SecondaryButton
           label={busy ? 'Opening messages…' : 'Message'}
           onPress={onMessage}
           disabled={busy || !profile}
-          style={styles.messageButton}
+          style={styles.connectionActionButton}
         />
+        {canSelectGroup ? (
+          <SecondaryButton
+            label={groupSelected ? 'Selected' : 'Add to group'}
+            onPress={onToggleGroup}
+            disabled={groupBusy}
+            style={styles.connectionActionButton}
+          />
+        ) : null}
       </View>
     </Card>
   );
@@ -248,6 +338,9 @@ const styles = StyleSheet.create({
   errorText: { color: colors.coralDark, marginBottom: spacing.sm },
   errorMessage: { color: colors.navyMuted, marginTop: spacing.xs },
   connectionsSection: { marginTop: spacing.xl },
+  groupCard: { padding: spacing.md, marginBottom: spacing.md },
+  groupCount: { color: colors.inkSoft, marginTop: spacing.xs },
+  createGroupButton: { marginTop: spacing.md },
   personCard: { padding: spacing.md, marginBottom: spacing.md },
   personHeader: { flexDirection: 'row', alignItems: 'center' },
   personDetails: { flex: 1, marginLeft: spacing.md },
@@ -255,5 +348,6 @@ const styles = StyleSheet.create({
   personSubtitle: { color: colors.inkSoft, marginTop: spacing.xs },
   responseActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
   responseButton: { flex: 1 },
-  messageButton: { marginTop: spacing.md },
+  connectionActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  connectionActionButton: { flex: 1 },
 });

@@ -155,17 +155,14 @@ describe('startDirectConversation', () => {
 });
 
 describe('createGroupConversation', () => {
-  it('calls the plan-based group RPC with its member and plan arguments and returns its conversation ID', async () => {
+  it('calls the group RPC with invitees only and returns its conversation ID', async () => {
     queueRpcResponse({ data: 'group-conversation-id', error: null });
 
-    await expect(createGroupConversation(
-      ['member-a', 'member-b', 'member-c'],
-      'eligible-plan-id',
-    )).resolves.toBe('group-conversation-id');
+    await expect(createGroupConversation(['invitee-a', 'invitee-b']))
+      .resolves.toBe('group-conversation-id');
 
     expect(mockSupabase.rpc).toHaveBeenCalledWith('create_group_conversation', {
-      member_profile_ids: ['member-a', 'member-b', 'member-c'],
-      target_plan_id: 'eligible-plan-id',
+      invitee_profile_ids: ['invitee-a', 'invitee-b'],
     });
   });
 
@@ -173,10 +170,7 @@ describe('createGroupConversation', () => {
     const error = new Error('Group creation denied');
     queueRpcResponse({ data: null, error });
 
-    await expect(createGroupConversation(
-      ['member-a', 'member-b', 'member-c'],
-      'eligible-plan-id',
-    )).rejects.toBe(error);
+    await expect(createGroupConversation(['invitee-a', 'invitee-b'])).rejects.toBe(error);
   });
 });
 

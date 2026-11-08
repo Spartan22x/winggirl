@@ -159,6 +159,28 @@ CREATE TEMP TABLE fixture_conversations (
 );
 GRANT SELECT, INSERT ON fixture_conversations TO authenticated;
 
+WITH group_conversation AS (
+  INSERT INTO public.conversations (created_by, plan_id, conversation_type)
+  VALUES (
+    '00000000-0000-4000-8000-000000000901',
+    '00000000-0000-4000-8000-000000000911',
+    'group'
+  )
+  RETURNING id
+)
+INSERT INTO fixture_conversations (fixture_name, conversation_id)
+SELECT 'group_abc', id FROM group_conversation;
+
+INSERT INTO public.conversation_members (conversation_id, profile_id)
+SELECT conversation_id, members.profile_id
+FROM fixture_conversations
+CROSS JOIN (VALUES
+  ('00000000-0000-4000-8000-000000000901'::uuid),
+  ('00000000-0000-4000-8000-000000000902'::uuid),
+  ('00000000-0000-4000-8000-000000000903'::uuid)
+) AS members(profile_id)
+WHERE fixture_name = 'group_abc';
+
 CREATE FUNCTION pg_temp.try_message_insert(
   target_conversation_id uuid,
   target_sender_id uuid,
@@ -249,7 +271,7 @@ BEGIN
 END;
 $function$;
 
-SELECT plan(74);
+SELECT plan(68);
 
 SELECT is(
   (SELECT count(*) FROM public.profiles
@@ -291,7 +313,7 @@ SELECT ok(
 SELECT ok(
   has_function_privilege(
     'authenticated',
-    'public.create_group_conversation(uuid[],uuid)',
+    'public.create_group_conversation(uuid[])',
     'EXECUTE'
   ),
   'Authenticated can execute create_group_conversation'
@@ -299,7 +321,7 @@ SELECT ok(
 SELECT ok(
   NOT has_function_privilege(
     'anon',
-    'public.create_group_conversation(uuid[],uuid)',
+    'public.create_group_conversation(uuid[])',
     'EXECUTE'
   ),
   'Anon cannot execute create_group_conversation'
@@ -307,7 +329,7 @@ SELECT ok(
 SELECT ok(
   NOT has_function_privilege(
     'service_role',
-    'public.create_group_conversation(uuid[],uuid)',
+    'public.create_group_conversation(uuid[])',
     'EXECUTE'
   ),
   'Service role cannot execute create_group_conversation'
@@ -353,71 +375,12 @@ SELECT is(
   'Direct conversation starts with exactly its two participants'
 );
 
-SELECT is(
-  public.create_group_conversation(
-    ARRAY[
-      '00000000-0000-4000-8000-000000000901'::uuid,
-      '00000000-0000-4000-8000-000000000902'::uuid,
-      '00000000-0000-4000-8000-000000000903'::uuid
-    ],
-    '00000000-0000-4000-8000-000000000911'::uuid
-  ) IS NOT NULL,
-  true,
-  'Eligible plan members can create a group through the RPC'
-);
-SELECT is(
-  (SELECT count(*) FROM public.conversations
-   WHERE conversation_type = 'group'
-     AND plan_id = '00000000-0000-4000-8000-000000000911'::uuid),
-  1::bigint,
-  'The group RPC creates one plan-linked group conversation'
-);
-SELECT is(
-  (SELECT count(*)
-   FROM public.conversation_members cm
-   JOIN public.conversations c ON c.id = cm.conversation_id
-   WHERE c.conversation_type = 'group'
-     AND c.plan_id = '00000000-0000-4000-8000-000000000911'::uuid),
-  3::bigint,
-  'The group RPC creates all three authorized memberships'
-);
 INSERT INTO pg_temp.fixture_conversations (fixture_name, conversation_id)
 SELECT 'direct_ab', id
 FROM public.conversations
 WHERE conversation_type = 'direct'
   AND created_by = auth.uid()
   AND direct_recipient_id = '00000000-0000-4000-8000-000000000902'::uuid;
-INSERT INTO pg_temp.fixture_conversations (fixture_name, conversation_id)
-SELECT 'group_abc', id
-FROM public.conversations
-WHERE conversation_type = 'group'
-  AND plan_id = '00000000-0000-4000-8000-000000000911'::uuid;
-
-SELECT throws_ok(
-  $$SELECT public.create_group_conversation(
-      ARRAY[
-        '00000000-0000-4000-8000-000000000901'::uuid,
-        '00000000-0000-4000-8000-000000000902'::uuid
-      ],
-      '00000000-0000-4000-8000-000000000911'::uuid
-    )$$,
-  '22023',
-  'A group conversation requires at least three distinct plan members including the caller.',
-  'The group RPC rejects fewer than three members'
-);
-SELECT throws_ok(
-  $$SELECT public.create_group_conversation(
-      ARRAY[
-        '00000000-0000-4000-8000-000000000901'::uuid,
-        '00000000-0000-4000-8000-000000000902'::uuid,
-        '00000000-0000-4000-8000-000000000903'::uuid
-      ],
-      NULL
-    )$$,
-  '22023',
-  'A group conversation requires at least three distinct plan members including the caller.',
-  'The group RPC currently requires plan-based creation'
-);
 
 INSERT INTO public.messages (conversation_id, sender_id, body)
 SELECT c.id, auth.uid(), 'Direct history before blocking'
@@ -753,20 +716,6 @@ SELECT is(
   0,
   'Unrelated nonmember cannot send group messages'
 );
-SELECT throws_ok(
-  $$SELECT public.create_group_conversation(
-      ARRAY[
-        '00000000-0000-4000-8000-000000000904'::uuid,
-        '00000000-0000-4000-8000-000000000901'::uuid,
-        '00000000-0000-4000-8000-000000000902'::uuid
-      ],
-      '00000000-0000-4000-8000-000000000911'::uuid
-    )$$,
-  '42501',
-  'Group conversation participants must belong to the plan.',
-  'Nonmember cannot use the group RPC to create a conversation'
-);
-
 SET LOCAL request.jwt.claim.sub = '00000000-0000-4000-8000-000000000902';
 SET LOCAL request.jwt.claims =
   '{"sub":"00000000-0000-4000-8000-000000000902","role":"authenticated","aud":"authenticated"}';

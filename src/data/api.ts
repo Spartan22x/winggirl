@@ -438,12 +438,10 @@ export async function startDirectConversation(targetProfileId: string): Promise<
 }
 
 export async function createGroupConversation(
-  memberProfileIds: string[],
-  targetPlanId: string,
+  inviteeProfileIds: string[],
 ): Promise<ConversationId> {
   const { data, error } = await supabase.rpc('create_group_conversation', {
-    member_profile_ids: memberProfileIds,
-    target_plan_id: targetPlanId,
+    invitee_profile_ids: inviteeProfileIds,
   });
   if (error) throw error;
   if (typeof data !== 'string') {

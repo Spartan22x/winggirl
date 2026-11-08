@@ -129,7 +129,7 @@ export type Database = {
         Returns: string;
       };
       create_group_conversation: {
-        Args: { member_profile_ids: string[]; target_plan_id: string };
+        Args: { invitee_profile_ids: string[] };
         Returns: string;
       };
     };
