@@ -8,6 +8,8 @@ const mockGetConversationMessages = jest.fn(async (
   _options?: { pageSize?: number; before?: MessageCursor },
 ): Promise<MessagePage> => ({ messages: [], hasMore: false, nextCursor: null }));
 const mockSendMessage = jest.fn(async (_conversationId: string, _body: string): Promise<void> => {});
+const mockSetParams = jest.fn();
+let mockRouteParams: { conversationId?: string } = {};
 let mockRefocus: (() => void | (() => void)) | null = null;
 
 jest.mock('@/src/data/api', () => ({
@@ -20,6 +22,11 @@ jest.mock('@/src/data/api', () => ({
 }));
 
 jest.mock('@expo/vector-icons/Ionicons', () => () => null);
+
+jest.mock('expo-router', () => ({
+  useLocalSearchParams: () => mockRouteParams,
+  useRouter: () => ({ setParams: mockSetParams }),
+}));
 
 jest.mock('@/src/auth/AuthProvider', () => ({
   useAuth: () => ({ user: { id: 'current-profile' } }),
@@ -130,6 +137,7 @@ function deferred<T>() {
 beforeEach(() => {
   jest.resetAllMocks();
   mockRefocus = null;
+  mockRouteParams = {};
   mockGetConversations.mockResolvedValue([makeConversation()]);
   mockGetConversationMessages.mockResolvedValue(makePage([]));
   mockSendMessage.mockResolvedValue(undefined);
@@ -190,6 +198,17 @@ describe('MessagesScreen conversation list', () => {
     expect(await view.findByText('Alex')).toBeTruthy();
     expect(view.getByText('Latest preview')).toBeTruthy();
     expect(mockGetConversations).toHaveBeenCalledWith();
+  });
+
+  it('opens the requested conversation from navigation parameters', async () => {
+    mockRouteParams = { conversationId: 'conversation-1' };
+    const firstMessage = makeMessage('first-message', 'Opened from connection', '2026-11-04T10:00:00.000Z');
+    mockGetConversationMessages.mockResolvedValue(makePage([firstMessage]));
+    const view = await render(<MessagesScreen />);
+
+    expect(await view.findByText('Opened from connection')).toBeTruthy();
+    expect(mockGetConversationMessages).toHaveBeenCalledWith('conversation-1', { pageSize: 30 });
+    expect(mockSetParams).toHaveBeenCalledWith({ conversationId: undefined });
   });
 
   it('labels groups using other participant names and falls back when a name is missing', async () => {

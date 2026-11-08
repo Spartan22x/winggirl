@@ -4,7 +4,12 @@ import { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { useAuth } from '@/src/auth/AuthProvider';
 import { Avatar, Card, EmptyState, PrimaryButton, Screen, SecondaryButton, SectionHeader, Text } from '@/src/components';
-import { getAcceptedConnections, getIncomingConnectionRequests, respondToConnectionRequest } from '@/src/data/api';
+import {
+  getAcceptedConnections,
+  getIncomingConnectionRequests,
+  respondToConnectionRequest,
+  startDirectConversation,
+} from '@/src/data/api';
 import type { AcceptedConnection, IncomingConnectionRequest } from '@/src/data/types';
 import { colors, spacing } from '@/src/theme';
 
@@ -19,6 +24,9 @@ export default function ConnectionsScreen() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [processingRequestId, setProcessingRequestId] = useState<string | null>(null);
   const processingRequestRef = useRef<string | null>(null);
+  const [messageActionError, setMessageActionError] = useState<string | null>(null);
+  const [processingMessageProfileId, setProcessingMessageProfileId] = useState<string | null>(null);
+  const processingMessageProfileIdRef = useRef<string | null>(null);
 
   const loadConnections = useCallback(async () => {
     if (!user) return;
@@ -56,6 +64,27 @@ export default function ConnectionsScreen() {
     } finally {
       processingRequestRef.current = null;
       setProcessingRequestId(null);
+    }
+  };
+
+  const handleStartMessage = async (profileId: string) => {
+    if (processingMessageProfileIdRef.current) return;
+    processingMessageProfileIdRef.current = profileId;
+    setProcessingMessageProfileId(profileId);
+    setMessageActionError(null);
+    try {
+      const conversationId = await startDirectConversation(profileId);
+      router.navigate({
+        pathname: '/(tabs)/messages',
+        params: { conversationId },
+      });
+    } catch (error) {
+      setMessageActionError(error instanceof Error && error.message === 'Conversation unavailable.'
+        ? 'We couldn’t open this conversation. Direct messages require an accepted connection and no active block.'
+        : 'We couldn’t start a conversation. Please check your connection and try again.');
+    } finally {
+      processingMessageProfileIdRef.current = null;
+      setProcessingMessageProfileId(null);
     }
   };
 
@@ -113,9 +142,17 @@ export default function ConnectionsScreen() {
 
       <View style={styles.connectionsSection}>
         <SectionHeader title="My Connections" />
+        {messageActionError ? (
+          <Text accessibilityRole="alert" style={styles.errorText}>{messageActionError}</Text>
+        ) : null}
         {!loadError && connections.length ? (
           connections.map((connection) => (
-            <ConnectionCard key={connection.profileId} connection={connection} />
+            <ConnectionCard
+              key={connection.profileId}
+              connection={connection}
+              busy={processingMessageProfileId === connection.profileId || Boolean(processingMessageProfileId)}
+              onMessage={() => { void handleStartMessage(connection.profileId); }}
+            />
           ))
         ) : !loadError && hasLoaded ? (
           <EmptyState title="Your circle starts here." message="Accepted connections will show up here." icon="♡" />
@@ -162,7 +199,15 @@ function RequestCard({
   );
 }
 
-function ConnectionCard({ connection }: { connection: AcceptedConnection }) {
+function ConnectionCard({
+  connection,
+  busy,
+  onMessage,
+}: {
+  connection: AcceptedConnection;
+  busy: boolean;
+  onMessage: () => void;
+}) {
   const profile = connection.profile;
   return (
     <Card style={styles.personCard}>
@@ -180,6 +225,12 @@ function ConnectionCard({ connection }: { connection: AcceptedConnection }) {
             {profile ? 'A new connection in your circle.' : 'This profile is no longer available.'}
           </Text>
         </View>
+        <SecondaryButton
+          label={busy ? 'Opening messages…' : 'Message'}
+          onPress={onMessage}
+          disabled={busy || !profile}
+          style={styles.messageButton}
+        />
       </View>
     </Card>
   );
@@ -204,4 +255,5 @@ const styles = StyleSheet.create({
   personSubtitle: { color: colors.inkSoft, marginTop: spacing.xs },
   responseActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
   responseButton: { flex: 1 },
+  messageButton: { marginTop: spacing.md },
 });

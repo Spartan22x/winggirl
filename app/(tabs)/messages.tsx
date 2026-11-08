@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -48,12 +49,17 @@ function mergeMessages(existing: Message[], incoming: Message[]) {
 }
 
 export default function MessagesScreen() {
+  const router = useRouter();
+  const { conversationId: requestedConversationId } = useLocalSearchParams<{
+    conversationId?: string;
+  }>();
   const { user } = useAuth();
   const { height: windowHeight } = useWindowDimensions();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listRefreshing, setListRefreshing] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  const [openConversationError, setOpenConversationError] = useState<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -67,6 +73,7 @@ export default function MessagesScreen() {
 
   const hasLoadedListRef = useRef(false);
   const listRequestRef = useRef(0);
+  const conversationLoadPromiseRef = useRef<Promise<Conversation[] | null> | null>(null);
   const historyRequestRef = useRef(0);
   const activeConversationIdRef = useRef<string | null>(null);
   const paginationLockRef = useRef(false);
@@ -76,14 +83,16 @@ export default function MessagesScreen() {
   const preserveScrollAfterPrependRef = useRef(false);
   const scrollToLatestRef = useRef(false);
   const sendingRef = useRef(false);
+  const handledRequestedConversationIdRef = useRef<string | null>(null);
   const profileId = user?.id;
 
   const activeConversation = activeConversationId
     ? conversations.find((conversation) => conversation.id === activeConversationId)
     : undefined;
 
-  const loadConversations = useCallback(async (pullToRefresh = false) => {
-    if (!profileId) return;
+  const loadConversations = useCallback(async (pullToRefresh = false): Promise<Conversation[] | null> => {
+    if (!profileId) return null;
+    if (conversationLoadPromiseRef.current) return conversationLoadPromiseRef.current;
     const requestId = ++listRequestRef.current;
     if (pullToRefresh) {
       setListRefreshing(true);
@@ -91,20 +100,32 @@ export default function MessagesScreen() {
       setListLoading(true);
     }
     setListError(null);
+    const request = (async () => {
+      try {
+        const nextConversations = await getConversations();
+        if (requestId === listRequestRef.current) {
+          setConversations(nextConversations);
+        }
+        return nextConversations;
+      } catch (error) {
+        if (requestId === listRequestRef.current) {
+          setListError(getErrorMessage(error, 'We could not load your conversations. Please try again.'));
+        }
+        return null;
+      } finally {
+        if (requestId === listRequestRef.current) {
+          hasLoadedListRef.current = true;
+          setListLoading(false);
+          setListRefreshing(false);
+        }
+      }
+    })();
+    conversationLoadPromiseRef.current = request;
     try {
-      const nextConversations = await getConversations();
-      if (requestId === listRequestRef.current) {
-        setConversations(nextConversations);
-      }
-    } catch (error) {
-      if (requestId === listRequestRef.current) {
-        setListError(getErrorMessage(error, 'We could not load your conversations. Please try again.'));
-      }
+      return await request;
     } finally {
-      if (requestId === listRequestRef.current) {
-        hasLoadedListRef.current = true;
-        setListLoading(false);
-        setListRefreshing(false);
+      if (conversationLoadPromiseRef.current === request) {
+        conversationLoadPromiseRef.current = null;
       }
     }
   }, [profileId]);
@@ -113,8 +134,40 @@ export default function MessagesScreen() {
     void loadConversations();
     return () => {
       listRequestRef.current += 1;
+      conversationLoadPromiseRef.current = null;
     };
   }, [loadConversations]));
+
+  useEffect(() => {
+    if (!requestedConversationId) {
+      handledRequestedConversationIdRef.current = null;
+      return;
+    }
+    if (handledRequestedConversationIdRef.current === requestedConversationId) return;
+
+    handledRequestedConversationIdRef.current = requestedConversationId;
+    setOpenConversationError(null);
+    void loadConversations().then((nextConversations) => {
+      const requestedConversation = nextConversations?.find(
+        (conversation) => conversation.id === requestedConversationId,
+      );
+      if (requestedConversation) {
+        activeConversationIdRef.current = requestedConversation.id;
+        setDraftMessage('');
+        setSendError(null);
+        setActiveConversationId(requestedConversation.id);
+      } else if (!nextConversations) {
+        setOpenConversationError(
+          'We couldn’t load your conversations. Retry the list, then select the conversation again.',
+        );
+      } else {
+        setOpenConversationError(
+          'We couldn’t open that conversation. It may no longer be available to your account.',
+        );
+      }
+      router.setParams({ conversationId: undefined });
+    });
+  }, [loadConversations, requestedConversationId, router]);
 
   const loadLatestHistory = useCallback(async (conversationId: string, reset: boolean) => {
     const requestId = ++historyRequestRef.current;
@@ -302,6 +355,9 @@ export default function MessagesScreen() {
             <Text accessibilityRole="alert" style={styles.errorText}>{listError}</Text>
             <SecondaryButton label="Try again" onPress={() => { void loadConversations(); }} style={styles.retryButton} />
           </View>
+        ) : null}
+        {openConversationError ? (
+          <Text accessibilityRole="alert" style={styles.errorText}>{openConversationError}</Text>
         ) : null}
 
         {listLoading ? (
