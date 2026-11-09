@@ -308,6 +308,254 @@ describe('MessagesScreen conversation history', () => {
       .map((node) => node.props.children);
     expect(renderedMessages).toEqual(['Oldest', 'Middle', 'Newest']);
   });
+
+  it('preserves loaded history and its cursor when sending, then loads another older page', async () => {
+    const firstCursor = { createdAt: '2026-11-04T10:01:00.000Z', id: 'middle' };
+    const loadedHistoryCursor = { createdAt: '2026-11-04T09:59:00.000Z', id: 'older-first' };
+    mockGetConversationMessages
+      .mockResolvedValueOnce(makePage([
+        makeMessage('middle', 'Middle', '2026-11-04T10:01:00.000Z'),
+        makeMessage('newest', 'Newest', '2026-11-04T10:02:00.000Z'),
+      ], true, firstCursor))
+      .mockResolvedValueOnce(makePage([
+        makeMessage('older-first', 'Older first', '2026-11-04T09:59:00.000Z'),
+        makeMessage('older-second', 'Older second', '2026-11-04T10:00:00.000Z'),
+      ], true, loadedHistoryCursor))
+      .mockResolvedValueOnce(makePage([
+        makeMessage('middle', 'Middle duplicate', '2026-11-04T10:01:00.000Z'),
+        makeMessage('newest', 'Newest duplicate', '2026-11-04T10:02:00.000Z'),
+        makeMessage('sent', 'Sent message', '2026-11-04T10:03:00.000Z', true),
+      ], true, firstCursor))
+      .mockResolvedValueOnce(makePage([
+        makeMessage('earlier', 'Earlier message', '2026-11-04T09:58:00.000Z'),
+      ]));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await view.findByText('Newest');
+    await fireEvent.press(view.getByText('Load older messages'));
+
+    const history = view.getByTestId('message-history');
+    await within(history).findByText('Older first');
+    const input = await view.findByTestId('message-input');
+    await fireEvent.changeText(input, 'Sent message');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+
+    await within(history).findByText('Sent message');
+    await waitFor(() => expect(mockGetConversations).toHaveBeenCalledTimes(2));
+    expect(within(history).getAllByText('Middle')).toHaveLength(1);
+    expect(within(history).queryByText('Middle duplicate')).toBeNull();
+    expect(within(history).queryByText('Newest duplicate')).toBeNull();
+    expect(within(history).getAllByText(/^(Older first|Older second|Middle|Newest|Sent message)$/)
+      .map((node) => node.props.children)).toEqual([
+      'Older first',
+      'Older second',
+      'Middle',
+      'Newest',
+      'Sent message',
+    ]);
+
+    await fireEvent.press(view.getByText('Load older messages'));
+    expect(mockGetConversationMessages).toHaveBeenLastCalledWith('conversation-1', {
+      pageSize: 30,
+      before: loadedHistoryCursor,
+    });
+    await within(history).findByText('Earlier message');
+    expect(within(history).getAllByText(/^(Earlier message|Older first|Older second|Middle|Newest|Sent message)$/)
+      .map((node) => node.props.children)).toEqual([
+      'Earlier message',
+      'Older first',
+      'Older second',
+      'Middle',
+      'Newest',
+      'Sent message',
+    ]);
+  });
+
+  it('ignores a pending older-page response after switching conversations', async () => {
+    const secondConversation = makeConversation({
+      id: 'conversation-2',
+      title: 'Grace',
+      directRecipientId: 'grace-profile',
+      otherParticipant: {
+        profileId: 'grace-profile',
+        firstName: 'Grace',
+        profileImageUrl: null,
+        avatarColor: null,
+      },
+    });
+    const olderResponse = deferred<MessagePage>();
+    mockGetConversations.mockResolvedValue([makeConversation(), secondConversation]);
+    mockGetConversationMessages
+      .mockResolvedValueOnce(makePage([
+        makeMessage('middle', 'Middle', '2026-11-04T10:01:00.000Z'),
+        makeMessage('newest', 'Newest', '2026-11-04T10:02:00.000Z'),
+      ], true, { createdAt: '2026-11-04T10:01:00.000Z', id: 'middle' }))
+      .mockReturnValueOnce(olderResponse.promise)
+      .mockResolvedValueOnce(makePage([
+        makeMessage('grace-message', 'Grace history', '2026-11-04T11:00:00.000Z'),
+      ]));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await view.findByText('Newest');
+    await fireEvent.press(view.getByText('Load older messages'));
+    await fireEvent.press(view.getByText('Grace'));
+    const history = view.getByTestId('message-history');
+    await within(history).findByText('Grace history');
+
+    olderResponse.resolve(makePage([
+      makeMessage('stale-older', 'Stale older message', '2026-11-04T10:00:00.000Z'),
+    ]));
+
+    await waitFor(() => expect(view.queryByTestId('loading-older-messages')).toBeNull());
+    expect(within(history).queryByText('Stale older message')).toBeNull();
+    expect(within(history).getByText('Grace history')).toBeTruthy();
+  });
+
+  it('does not let a send completion invalidate the newly opened conversation history', async () => {
+    const secondConversation = makeConversation({
+      id: 'conversation-2',
+      title: 'Grace',
+      directRecipientId: 'grace-profile',
+      otherParticipant: {
+        profileId: 'grace-profile',
+        firstName: 'Grace',
+        profileImageUrl: null,
+        avatarColor: null,
+      },
+    });
+    const pendingSend = deferred<void>();
+    const secondHistory = deferred<MessagePage>();
+    mockGetConversations.mockResolvedValue([makeConversation(), secondConversation]);
+    mockGetConversationMessages
+      .mockResolvedValueOnce(makePage([
+        makeMessage('alex-message', 'Alex history', '2026-11-04T10:00:00.000Z'),
+      ]))
+      .mockReturnValueOnce(secondHistory.promise);
+    mockSendMessage.mockReturnValue(pendingSend.promise);
+
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await view.findByText('Alex history');
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Pending send');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+
+    await fireEvent.press(view.getByText('Cancel'));
+    await fireEvent.press(view.getByText('Grace'));
+    expect(await view.findByTestId('history-loading')).toBeTruthy();
+    expect(mockGetConversationMessages).toHaveBeenCalledTimes(2);
+    expect(mockGetConversationMessages).toHaveBeenLastCalledWith('conversation-2', {
+      pageSize: 30,
+    });
+
+    await act(async () => {
+      pendingSend.resolve(undefined);
+      await pendingSend.promise;
+    });
+    await waitFor(() => expect(mockGetConversations).toHaveBeenCalledTimes(2));
+    expect(mockGetConversationMessages).toHaveBeenCalledTimes(2);
+    expect(view.getByTestId('history-loading')).toBeTruthy();
+
+    await act(async () => {
+      secondHistory.resolve(makePage([
+        makeMessage('grace-message', 'Grace history loaded', '2026-11-04T11:00:00.000Z'),
+      ]));
+      await secondHistory.promise;
+    });
+    const history = view.getByTestId('message-history');
+    expect(await within(history).findByText('Grace history loaded')).toBeTruthy();
+    expect(view.queryByTestId('history-loading')).toBeNull();
+  });
+
+  it('keeps a pending older-page cursor retryable after sending a message', async () => {
+    const firstCursor = { createdAt: '2026-11-04T10:01:00.000Z', id: 'middle' };
+    const retryCursor = { createdAt: '2026-11-04T10:00:00.000Z', id: 'older' };
+    const pendingOlderPage = deferred<MessagePage>();
+    const pendingSend = deferred<void>();
+    const latestPage = deferred<MessagePage>();
+    const retryPage = deferred<MessagePage>();
+    mockGetConversationMessages
+      .mockResolvedValueOnce(makePage([
+        makeMessage('middle', 'Middle', '2026-11-04T10:01:00.000Z'),
+        makeMessage('newest', 'Newest', '2026-11-04T10:02:00.000Z'),
+      ], true, firstCursor))
+      .mockReturnValueOnce(pendingOlderPage.promise)
+      .mockReturnValueOnce(latestPage.promise)
+      .mockReturnValueOnce(retryPage.promise)
+      .mockResolvedValueOnce(makePage([
+        makeMessage('oldest', 'Oldest', '2026-11-04T09:59:00.000Z'),
+      ]));
+    mockSendMessage.mockReturnValue(pendingSend.promise);
+
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await view.findByText('Newest');
+    await fireEvent.press(view.getByText('Load older messages'));
+    expect(await view.findByTestId('loading-older-messages')).toBeTruthy();
+
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Sent while loading');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await act(async () => {
+      pendingSend.resolve(undefined);
+      await pendingSend.promise;
+    });
+    await waitFor(() => expect(mockGetConversationMessages).toHaveBeenCalledTimes(3));
+    expect(mockGetConversationMessages).toHaveBeenLastCalledWith('conversation-1', {
+      pageSize: 30,
+    });
+
+    await act(async () => {
+      latestPage.resolve(makePage([
+        makeMessage('middle', 'Middle duplicate', '2026-11-04T10:01:00.000Z'),
+        makeMessage('newest', 'Newest duplicate', '2026-11-04T10:02:00.000Z'),
+        makeMessage('sent', 'Sent while loading', '2026-11-04T10:03:00.000Z', true),
+      ], true, firstCursor));
+      await latestPage.promise;
+    });
+    const history = view.getByTestId('message-history');
+    expect(await within(history).findByText('Sent while loading')).toBeTruthy();
+    expect(view.queryByTestId('loading-older-messages')).toBeNull();
+    expect(view.getByText('Load older messages')).toBeTruthy();
+
+    await act(async () => {
+      pendingOlderPage.resolve(makePage([
+        makeMessage('stale-older', 'Stale older page', '2026-11-04T09:58:00.000Z'),
+      ], true, retryCursor));
+      await pendingOlderPage.promise;
+    });
+    expect(within(history).queryByText('Stale older page')).toBeNull();
+    expect(view.queryByTestId('loading-older-messages')).toBeNull();
+    expect(view.getByText('Load older messages')).toBeTruthy();
+
+    await fireEvent.press(view.getByText('Load older messages'));
+    expect(mockGetConversationMessages).toHaveBeenLastCalledWith('conversation-1', {
+      pageSize: 30,
+      before: firstCursor,
+    });
+    await act(async () => {
+      retryPage.resolve(makePage([
+        makeMessage('older', 'Older page', '2026-11-04T10:00:00.000Z'),
+        makeMessage('middle', 'Middle duplicate', '2026-11-04T10:01:00.000Z'),
+      ], true, retryCursor));
+      await retryPage.promise;
+    });
+    expect(await within(history).findByText('Older page')).toBeTruthy();
+    expect(within(history).queryByText('Middle duplicate')).toBeNull();
+    expect(within(history).queryByText('Stale older page')).toBeNull();
+    expect(within(history).getAllByText(/^(Older page|Middle|Newest|Sent while loading)$/)
+      .map((node) => node.props.children)).toEqual([
+      'Older page',
+      'Middle',
+      'Newest',
+      'Sent while loading',
+    ]);
+
+    await fireEvent.press(view.getByText('Load older messages'));
+    expect(mockGetConversationMessages).toHaveBeenLastCalledWith('conversation-1', {
+      pageSize: 30,
+      before: retryCursor,
+    });
+    expect(await within(history).findByText('Oldest')).toBeTruthy();
+  });
 });
 
 describe('MessagesScreen composer', () => {

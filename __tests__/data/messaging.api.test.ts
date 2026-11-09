@@ -397,6 +397,49 @@ describe('getConversations', () => {
 });
 
 describe('getConversationMessages', () => {
+  it('returns exactly 30 messages without an older-page cursor', async () => {
+    const messages = Array.from({ length: 30 }, (_, index) => {
+      const messageNumber = index + 1;
+      return messageRow(
+        `00000000-0000-4000-8000-${messageNumber.toString(16).padStart(12, '0')}`,
+        new Date(Date.UTC(2026, 3, 5, 13, messageNumber)).toISOString(),
+      );
+    }).reverse();
+    queueResponse('messages', { data: messages, error: null });
+
+    const page = await getConversationMessages('conversation-1');
+
+    expect(page.messages).toHaveLength(30);
+    expect(page.messages[0].id).toBe('00000000-0000-4000-8000-000000000001');
+    expect(page.messages[29].id).toBe('00000000-0000-4000-8000-00000000001e');
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeNull();
+    expect(getCalls('messages', 'limit').map(({ args }) => args)).toEqual([[31]]);
+  });
+
+  it('returns 30 of more than 30 messages and a cursor for the oldest returned message', async () => {
+    const messages = Array.from({ length: 31 }, (_, index) => {
+      const messageNumber = index + 1;
+      return messageRow(
+        `00000000-0000-4000-8000-${messageNumber.toString(16).padStart(12, '0')}`,
+        new Date(Date.UTC(2026, 3, 5, 13, messageNumber)).toISOString(),
+      );
+    }).reverse();
+    queueResponse('messages', { data: messages, error: null });
+
+    const page = await getConversationMessages('conversation-1');
+
+    expect(page.messages).toHaveLength(30);
+    expect(page.messages[0].id).toBe('00000000-0000-4000-8000-000000000002');
+    expect(page.messages[29].id).toBe('00000000-0000-4000-8000-00000000001f');
+    expect(page.hasMore).toBe(true);
+    expect(page.nextCursor).toEqual({
+      id: '00000000-0000-4000-8000-000000000002',
+      createdAt: new Date(Date.UTC(2026, 3, 5, 13, 2)).toISOString(),
+    });
+    expect(getCalls('messages', 'limit').map(({ args }) => args)).toEqual([[31]]);
+  });
+
   it('returns the first page in chronological order with a cursor when older messages exist', async () => {
     queueResponse('messages', {
       data: [
@@ -449,6 +492,38 @@ describe('getConversationMessages', () => {
       });
     expect(getCalls('messages', 'or').map(({ args }) => args)).toEqual([[
       `created_at.lt.${before.createdAt},and(created_at.eq.${before.createdAt},id.lt.${before.id})`,
+    ]]);
+  });
+
+  it('paginates across equal timestamps without skipping the boundary message', async () => {
+    const timestamp = '2026-04-05T13:00:00.000Z';
+    const newest = '00000000-0000-4000-8000-000000000003';
+    const boundary = '00000000-0000-4000-8000-000000000002';
+    const oldest = '00000000-0000-4000-8000-000000000001';
+    queueResponse('messages', {
+      data: [
+        messageRow(newest, timestamp),
+        messageRow(boundary, timestamp),
+        messageRow(oldest, timestamp),
+      ],
+      error: null,
+    });
+    queueResponse('messages', {
+      data: [messageRow(oldest, timestamp)],
+      error: null,
+    });
+
+    const firstPage = await getConversationMessages('conversation-1', { pageSize: 2 });
+    const nextPage = await getConversationMessages('conversation-1', {
+      pageSize: 2,
+      before: firstPage.nextCursor ?? undefined,
+    });
+
+    expect(firstPage.messages.map((message) => message.id)).toEqual([boundary, newest]);
+    expect(firstPage.nextCursor).toEqual({ createdAt: timestamp, id: boundary });
+    expect(nextPage.messages.map((message) => message.id)).toEqual([oldest]);
+    expect(getCalls('messages', 'or').map(({ args }) => args)).toEqual([[
+      `created_at.lt.${timestamp},and(created_at.eq.${timestamp},id.lt.${boundary})`,
     ]]);
   });
 

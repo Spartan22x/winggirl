@@ -76,6 +76,7 @@ export default function MessagesScreen() {
   const conversationLoadPromiseRef = useRef<Promise<Conversation[] | null> | null>(null);
   const historyRequestRef = useRef(0);
   const activeConversationIdRef = useRef<string | null>(null);
+  const hasLoadedOlderPageRef = useRef(false);
   const paginationLockRef = useRef(false);
   const listRef = useRef<FlatList<Message>>(null);
   const listContentHeightRef = useRef(0);
@@ -174,6 +175,7 @@ export default function MessagesScreen() {
     paginationLockRef.current = false;
     setLoadingOlder(false);
     if (reset) {
+      hasLoadedOlderPageRef.current = false;
       setMessages([]);
       setHistoryHasMore(false);
       setHistoryCursor(null);
@@ -192,9 +194,17 @@ export default function MessagesScreen() {
         && activeConversationIdRef.current === conversationId
       ) {
         scrollToLatestRef.current = true;
-        setMessages(page.messages);
-        setHistoryHasMore(page.hasMore);
-        setHistoryCursor(page.nextCursor);
+        if (reset) {
+          setMessages(page.messages);
+          setHistoryHasMore(page.hasMore);
+          setHistoryCursor(page.nextCursor);
+        } else {
+          setMessages((currentMessages) => mergeMessages(currentMessages, page.messages));
+          if (!hasLoadedOlderPageRef.current) {
+            setHistoryHasMore(page.hasMore);
+            setHistoryCursor(page.nextCursor);
+          }
+        }
       }
     } catch (error) {
       if (
@@ -262,6 +272,7 @@ export default function MessagesScreen() {
         || historyRequestRef.current !== requestId
       ) return;
       const nextMessages = mergeMessages(messages, page.messages);
+      hasLoadedOlderPageRef.current = true;
       preserveScrollAfterPrependRef.current = nextMessages.length > messages.length;
       setMessages(nextMessages);
       setHistoryHasMore(page.hasMore);
@@ -289,15 +300,22 @@ export default function MessagesScreen() {
     setSendError(null);
     try {
       await sendMessageToSupabase(conversationId, draftMessage.trim());
-      setDraftMessage('');
-      scrollToLatestRef.current = true;
+      const isActiveConversation = activeConversationIdRef.current === conversationId;
+      if (isActiveConversation) {
+        setDraftMessage('');
+        scrollToLatestRef.current = true;
+      }
       await Promise.all([
-        loadLatestHistory(conversationId, false),
+        isActiveConversation ? loadLatestHistory(conversationId, false) : Promise.resolve(),
         loadConversations(),
       ]);
-      listRef.current?.scrollToEnd({ animated: true });
+      if (activeConversationIdRef.current === conversationId) {
+        listRef.current?.scrollToEnd({ animated: true });
+      }
     } catch (error) {
-      setSendError(getErrorMessage(error, 'Your message could not be sent. Please try again.'));
+      if (activeConversationIdRef.current === conversationId) {
+        setSendError(getErrorMessage(error, 'Your message could not be sent. Please try again.'));
+      }
     } finally {
       sendingRef.current = false;
       setSending(false);
