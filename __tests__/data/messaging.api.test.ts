@@ -6,10 +6,12 @@ import {
   startDirectConversation,
 } from '@/src/data/api';
 import { supabase } from '@/src/lib/supabase';
+import { MessageInsertRejectedError } from '@/src/data/message-send-error';
 
 type MockResponse = {
   data: unknown;
-  error: Error | null;
+  error: Error | { message: string; code: string } | null;
+  status?: number;
 };
 
 type QueryCall = {
@@ -66,6 +68,11 @@ class MockQuery {
 
   insert(...args: unknown[]) {
     mockQueryCalls.push({ table: this.table, method: 'insert', args });
+    return this;
+  }
+
+  maybeSingle() {
+    mockQueryCalls.push({ table: this.table, method: 'maybeSingle', args: [] });
     return this;
   }
 
@@ -557,36 +564,114 @@ describe('getConversationMessages', () => {
 });
 
 describe('sendMessage', () => {
-  it('uses the authenticated sender and ignores a legacy caller-supplied profile ID', async () => {
-    mockAuthenticatedUserId = 'authenticated-sender';
+  const pending = {
+    id: 'message-id',
+    conversationId: 'conversation-7',
+    senderId: 'current-profile',
+    body: '  Hello there  ',
+  };
+
+  it('inserts the stable ID and authenticated sender', async () => {
     queueResponse('messages', { data: null, error: null });
 
-    await expect(sendMessage('forged-sender', 'conversation-7', '  Hello there  '))
-      .resolves.toBeUndefined();
+    await expect(sendMessage(pending)).resolves.toBeUndefined();
 
     expect(getCalls('messages', 'insert').map(({ args }) => args)).toEqual([
       [{
+        id: 'message-id',
         conversation_id: 'conversation-7',
-        sender_id: 'authenticated-sender',
+        sender_id: 'current-profile',
         body: '  Hello there  ',
       }],
     ]);
   });
 
-  it('supports sending without a caller-supplied identity', async () => {
-    queueResponse('messages', { data: null, error: null });
-    await sendMessage('conversation-8', 'Message body');
-    expect(getCalls('messages', 'insert')[0].args[0]).toEqual({
-      conversation_id: 'conversation-8',
-      sender_id: 'current-profile',
-      body: 'Message body',
+  it('rejects a pending message belonging to another account before insertion', async () => {
+    await expect(sendMessage({ ...pending, senderId: 'another-profile' }))
+      .rejects.toThrow('different account');
+    expect(getCalls('messages', 'insert')).toHaveLength(0);
+  });
+
+  it('reconciles an exact match after a duplicate ID', async () => {
+    queueResponse('messages', { data: null, error: { code: '23505', message: 'duplicate' } });
+    queueResponse('messages', { data: {
+      id: pending.id, conversation_id: pending.conversationId,
+      sender_id: pending.senderId, body: pending.body,
+    }, error: null });
+    await expect(sendMessage(pending)).resolves.toBeUndefined();
+    expect(getCalls('messages', 'eq')[0].args).toEqual(['id', pending.id]);
+  });
+
+  it('reuses the same ID after an ambiguous failure and reconciles a committed insert', async () => {
+    const networkError = new Error('Connection lost');
+    queueResponse('messages', { data: null, error: networkError });
+    await expect(sendMessage(pending)).rejects.toBe(networkError);
+    queueResponse('messages', { data: null, error: { code: '23505', message: 'duplicate' } });
+    queueResponse('messages', { data: {
+      id: pending.id, conversation_id: pending.conversationId,
+      sender_id: pending.senderId, body: pending.body,
+    }, error: null });
+    await expect(sendMessage(pending)).resolves.toBeUndefined();
+    expect(getCalls('messages', 'insert')).toHaveLength(2);
+    expect(getCalls('messages', 'insert')[1].args).toEqual(getCalls('messages', 'insert')[0].args);
+  });
+
+  it.each([
+    ['id', { id: 'other' }],
+    ['conversation', { conversation_id: 'other' }],
+    ['sender', { sender_id: 'other' }],
+    ['body', { body: 'other' }],
+    ['missing', null],
+  ])('does not accept an inaccessible or mismatched %s collision', async (_label, changes) => {
+    queueResponse('messages', { data: null, error: { code: '23505', message: 'duplicate' } });
+    const row = {
+      id: pending.id, conversation_id: pending.conversationId,
+      sender_id: pending.senderId, body: pending.body,
+    };
+    queueResponse('messages', { data: changes ? { ...row, ...changes } : null, error: null });
+    await expect(sendMessage(pending)).rejects.toThrow('Could not verify');
+  });
+
+  it('surfaces a reconciliation query failure', async () => {
+    const lookupError = new Error('Lookup failed');
+    queueResponse('messages', { data: null, error: { code: '23505', message: 'duplicate' } });
+    queueResponse('messages', { data: null, error: lookupError });
+    await expect(sendMessage(pending)).rejects.toBe(lookupError);
+  });
+
+  it('classifies a server check-constraint rejection with a useful body-limit message', async () => {
+    queueResponse('messages', {
+      data: null,
+      error: { code: '23514', message: 'new row violates check constraint "messages_body_check"' },
+      status: 400,
     });
+    await expect(sendMessage(pending)).rejects.toThrow(MessageInsertRejectedError);
+
+    queueResponse('messages', {
+      data: null,
+      error: { code: '23514', message: 'new row violates check constraint "messages_body_check"' },
+      status: 400,
+    });
+    await expect(sendMessage(pending)).rejects.toThrow('between 1 and 4,000 characters');
+  });
+
+  it('does not classify a check-constraint code without the expected server response', async () => {
+    const error = { code: '23514', message: 'unknown failure' };
+    queueResponse('messages', { data: null, error, status: 0 });
+    await expect(sendMessage(pending)).rejects.toBe(error);
+  });
+
+  it('does not classify a check-constraint error from reconciliation as an insert rejection', async () => {
+    const lookupError = { code: '23514', message: 'lookup failed' };
+    queueResponse('messages', { data: null, error: { code: '23505', message: 'duplicate' } });
+    queueResponse('messages', { data: null, error: lookupError, status: 400 });
+    await expect(sendMessage(pending)).rejects.toBe(lookupError);
   });
 
   it('propagates message insert errors', async () => {
     const error = new Error('Message insert failed');
     queueResponse('messages', { data: null, error });
-    await expect(sendMessage('conversation-8', 'Message body')).rejects.toBe(error);
+    await expect(sendMessage(pending)).rejects.toBe(error);
   });
 
   it('propagates authentication failures', async () => {
@@ -595,6 +680,6 @@ describe('sendMessage', () => {
       data: { user: null },
       error,
     });
-    await expect(sendMessage('conversation-8', 'Message body')).rejects.toBe(error);
+    await expect(sendMessage(pending)).rejects.toBe(error);
   });
 });

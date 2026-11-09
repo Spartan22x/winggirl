@@ -109,6 +109,12 @@ export type Message = {
 };
 
 export type ConversationId = string;
+export type PendingMessage = Readonly<{
+  id: string;
+  conversationId: ConversationId;
+  senderId: string;
+  body: string;
+}>;
 export type ConversationType = 'direct' | 'group';
 
 export type ConversationParticipant = {

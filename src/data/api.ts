@@ -1,6 +1,7 @@
 import { randomUUID } from 'expo-crypto';
 import { supabase } from '@/src/lib/supabase';
-import type { AcceptedConnection, ConnectionProfile, ConnectionRelationshipStatus, ConnectionRequestResult, Conversation, ConversationId, ConversationParticipant, ConversationType, IncomingConnectionRequest, Message, MessageCursor, MessagePage, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, PlanVisibility, UserProfile } from './types';
+import { MessageInsertRejectedError } from './message-send-error';
+import type { AcceptedConnection, ConnectionProfile, ConnectionRelationshipStatus, ConnectionRequestResult, Conversation, ConversationId, ConversationParticipant, ConversationType, IncomingConnectionRequest, Message, MessageCursor, MessagePage, PendingMessage, PlanDetails, PlanItem, PlanMemberStatus, PlanOverlapCandidate, PlanParticipant, PlanVisibility, UserProfile } from './types';
 
 type ProfileRow = { id: string; first_name: string; age: number | null; bio: string | null; avatar_color: string };
 type AvailabilityRow = { profile_id: string; is_available: boolean };
@@ -662,24 +663,37 @@ export async function getConversationMessages(
   };
 }
 
-export async function sendMessage(conversationId: ConversationId, body: string): Promise<void>;
-export async function sendMessage(
-  _legacyProfileId: string,
-  conversationId: ConversationId,
-  body: string,
-): Promise<void>;
-export async function sendMessage(
-  firstArgument: string,
-  secondArgument: string,
-  legacyBody?: string,
-): Promise<void> {
+export async function sendMessage(message: PendingMessage): Promise<void> {
   const profileId = await getAuthenticatedProfileId('You must be signed in to send messages.');
-  const conversationId = legacyBody === undefined ? firstArgument : secondArgument;
-  const body = legacyBody === undefined ? secondArgument : legacyBody;
-  const { error } = await supabase.from('messages').insert({
-    conversation_id: conversationId,
+  if (message.senderId !== profileId) {
+    throw new Error('This pending message belongs to a different account.');
+  }
+  const { error, status } = await supabase.from('messages').insert({
+    id: message.id,
+    conversation_id: message.conversationId,
     sender_id: profileId,
-    body,
+    body: message.body,
   });
-  if (error) throw error;
+  if (!error) return;
+  if (status === 400 && error.code === '23514') {
+    const reason = error.message.includes('messages_body_check')
+      ? 'Messages must contain between 1 and 4,000 characters.'
+      : `The server rejected the message: ${error.message}`;
+    throw new MessageInsertRejectedError(`${reason} Please edit your message and try again.`);
+  }
+  if (error.code !== '23505') throw error;
+
+  const { data: existing, error: lookupError } = await supabase
+    .from('messages')
+    .select('id, conversation_id, sender_id, body')
+    .eq('id', message.id)
+    .maybeSingle();
+  if (lookupError) throw lookupError;
+  if (!existing
+    || existing.id !== message.id
+    || existing.conversation_id !== message.conversationId
+    || existing.sender_id !== profileId
+    || existing.body !== message.body) {
+    throw new Error('Could not verify this message. Its ID is already in use or the message is unavailable.');
+  }
 }

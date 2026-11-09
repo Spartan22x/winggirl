@@ -1,5 +1,5 @@
 import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
-import type { Conversation, Message, MessageCursor, MessagePage } from '@/src/data/types';
+import type { Conversation, Message, MessageCursor, MessagePage, PendingMessage } from '@/src/data/types';
 import MessagesScreen from '@/app/(tabs)/messages';
 
 const mockGetConversations = jest.fn(async (): Promise<Conversation[]> => []);
@@ -7,10 +7,14 @@ const mockGetConversationMessages = jest.fn(async (
   _conversationId: string,
   _options?: { pageSize?: number; before?: MessageCursor },
 ): Promise<MessagePage> => ({ messages: [], hasMore: false, nextCursor: null }));
-const mockSendMessage = jest.fn(async (_conversationId: string, _body: string): Promise<void> => {});
+const mockSendMessage = jest.fn(async (_message: PendingMessage): Promise<void> => {});
 const mockSetParams = jest.fn();
 let mockRouteParams: { conversationId?: string } = {};
 let mockRefocus: (() => void | (() => void)) | null = null;
+
+jest.mock('expo-crypto', () => ({
+  randomUUID: () => 'pagination-message-uuid',
+}));
 
 jest.mock('@/src/data/api', () => ({
   getConversations: () => mockGetConversations(),
@@ -18,7 +22,7 @@ jest.mock('@/src/data/api', () => ({
     conversationId: string,
     options?: { pageSize?: number; before?: MessageCursor },
   ) => mockGetConversationMessages(conversationId, options),
-  sendMessage: (conversationId: string, body: string) => mockSendMessage(conversationId, body),
+  sendMessage: (message: PendingMessage) => mockSendMessage(message),
 }));
 
 jest.mock('@expo/vector-icons/Ionicons', () => () => null);

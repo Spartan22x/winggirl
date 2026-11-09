@@ -1,6 +1,7 @@
 import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
 import { FlatList } from 'react-native';
-import type { Conversation, Message, MessageCursor, MessagePage } from '@/src/data/types';
+import type { Conversation, Message, MessageCursor, MessagePage, PendingMessage } from '@/src/data/types';
+import { MessageInsertRejectedError } from '@/src/data/message-send-error';
 import MessagesScreen from '@/app/(tabs)/messages';
 
 const mockGetConversations = jest.fn(async (): Promise<Conversation[]> => []);
@@ -8,10 +9,15 @@ const mockGetConversationMessages = jest.fn(async (
   _conversationId: string,
   _options?: { pageSize?: number; before?: MessageCursor },
 ): Promise<MessagePage> => ({ messages: [], hasMore: false, nextCursor: null }));
-const mockSendMessage = jest.fn(async (_conversationId: string, _body: string): Promise<void> => {});
+const mockSendMessage = jest.fn(async (_message: PendingMessage): Promise<void> => {});
 const mockSetParams = jest.fn();
 let mockRouteParams: { conversationId?: string } = {};
 let mockRefocus: (() => void | (() => void)) | null = null;
+let mockNextMessageId = 0;
+
+jest.mock('expo-crypto', () => ({
+  randomUUID: () => `message-uuid-${++mockNextMessageId}`,
+}));
 
 jest.mock('@/src/data/api', () => ({
   getConversations: () => mockGetConversations(),
@@ -19,7 +25,7 @@ jest.mock('@/src/data/api', () => ({
     conversationId: string,
     options?: { pageSize?: number; before?: MessageCursor },
   ) => mockGetConversationMessages(conversationId, options),
-  sendMessage: (conversationId: string, body: string) => mockSendMessage(conversationId, body),
+  sendMessage: (message: PendingMessage) => mockSendMessage(message),
 }));
 
 jest.mock('@expo/vector-icons/Ionicons', () => () => null);
@@ -139,6 +145,7 @@ beforeEach(() => {
   jest.resetAllMocks();
   mockRefocus = null;
   mockRouteParams = {};
+  mockNextMessageId = 0;
   mockGetConversations.mockResolvedValue([makeConversation()]);
   mockGetConversationMessages.mockResolvedValue(makePage([]));
   mockSendMessage.mockResolvedValue(undefined);
@@ -735,8 +742,9 @@ describe('MessagesScreen composer', () => {
       await fireEvent.press(view.getByRole('button', { name: 'Send' }));
       expect(await view.findByText('Sending…')).toBeTruthy();
       expect(view.getByTestId('message-input').props.value).toBe('Message B');
-      expect(mockSendMessage).toHaveBeenNthCalledWith(1, 'conversation-1', 'Message A');
-      expect(mockSendMessage).toHaveBeenNthCalledWith(2, 'conversation-2', 'Message B');
+      expect(mockSendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ conversationId: 'conversation-1', body: 'Message A' }));
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({ conversationId: 'conversation-2', body: 'Message B' }));
+      expect(mockSendMessage.mock.calls[0][0].id).not.toBe(mockSendMessage.mock.calls[1][0].id);
 
       await fireEvent.press(view.getByText('Cancel'));
       await fireEvent.press(view.getByText('Alex'));
@@ -840,13 +848,12 @@ describe('MessagesScreen composer', () => {
     await fireEvent.press(view.getByText('Alex'));
     expect(await view.findByText('A failed')).toBeTruthy();
     expect(view.getByTestId('message-input').props.value).toBe('');
-    await fireEvent.changeText(view.getByTestId('message-input'), 'Message A');
-    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await fireEvent.press(view.getByRole('button', { name: 'Retry original message' }));
     await waitFor(() => expect(view.queryByText('A failed')).toBeNull());
     expect(mockSendMessage).toHaveBeenCalledTimes(3);
-    expect(mockSendMessage).toHaveBeenNthCalledWith(1, 'conversation-1', 'Message A');
-    expect(mockSendMessage).toHaveBeenNthCalledWith(2, 'conversation-2', 'Message B');
-    expect(mockSendMessage).toHaveBeenNthCalledWith(3, 'conversation-1', 'Message A');
+    expect(mockSendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ conversationId: 'conversation-1', body: 'Message A' }));
+    expect(mockSendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({ conversationId: 'conversation-2', body: 'Message B' }));
+    expect(mockSendMessage.mock.calls[2][0]).toEqual(mockSendMessage.mock.calls[0][0]);
     await fireEvent.press(view.getByText('Cancel'));
     await fireEvent.press(view.getByText('Grace'));
     const history = view.getByTestId('message-history');
@@ -955,7 +962,7 @@ describe('MessagesScreen composer', () => {
     await fireEvent.changeText(input, '  Hello there  ');
     await fireEvent.press(view.getByRole('button', { name: 'Send' }));
 
-    expect(mockSendMessage).toHaveBeenCalledWith('conversation-1', 'Hello there');
+    expect(mockSendMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conversation-1', body: 'Hello there', senderId: 'current-profile' }));
     expect(await view.findByText('Hello there')).toBeTruthy();
     await waitFor(() => expect(mockGetConversations).toHaveBeenCalledTimes(2));
     expect(mockGetConversationMessages).toHaveBeenCalledTimes(2);
@@ -976,6 +983,222 @@ describe('MessagesScreen composer', () => {
 
     expect(await view.findByText('Send failed')).toBeTruthy();
     expect(view.getByTestId('message-input').props.value).toBe('Keep this draft');
+  });
+
+  it('releases a definitively rejected message so an edited draft gets a new ID', async () => {
+    mockSendMessage.mockRejectedValueOnce(new MessageInsertRejectedError(
+      'Messages must contain between 1 and 4,000 characters. Please edit your message and try again.',
+    ));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    const originalDraft = 'a'.repeat(4001);
+    await fireEvent.changeText(await view.findByTestId('message-input'), originalDraft);
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(await view.findByText(/between 1 and 4,000 characters/)).toBeTruthy();
+    expect(view.getByTestId('message-input').props.value).toBe(originalDraft);
+    expect(view.queryByText('Retry original message')).toBeNull();
+    expect(view.getByRole('button', { name: 'Send' }).props.accessibilityState?.disabled).toBe(false);
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Corrected');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(mockSendMessage.mock.calls[0][0]).toEqual(expect.objectContaining({
+      id: 'message-uuid-1', body: originalDraft,
+    }));
+    expect(mockSendMessage.mock.calls[1][0]).toEqual(expect.objectContaining({
+      id: 'message-uuid-2', body: 'Corrected',
+    }));
+    await waitFor(() => expect(view.getByTestId('message-input').props.value).toBe(''));
+  });
+
+  it('restores a rejected draft to its own conversation after switching during the send', async () => {
+    const sendA = deferred<void>();
+    mockGetConversations.mockResolvedValue([
+      makeConversation(),
+      makeConversation({
+        id: 'conversation-2',
+        title: 'Grace',
+        directRecipientId: 'grace-profile',
+        otherParticipant: {
+          profileId: 'grace-profile',
+          firstName: 'Grace',
+          profileImageUrl: null,
+          avatarColor: null,
+        },
+      }),
+    ]);
+    mockSendMessage.mockReturnValueOnce(sendA.promise);
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Rejected A');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await fireEvent.press(view.getByText('Cancel'));
+    await fireEvent.press(view.getByText('Grace'));
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Draft B');
+    await act(async () => {
+      sendA.reject(new MessageInsertRejectedError('Message A was rejected.'));
+      await sendA.promise.catch(() => {});
+    });
+    expect(view.getByTestId('message-input').props.value).toBe('Draft B');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(mockSendMessage.mock.calls[1][0]).toEqual(expect.objectContaining({
+      conversationId: 'conversation-2', body: 'Draft B',
+    }));
+    await waitFor(() => expect(view.getByTestId('message-input').props.editable).toBe(true));
+    await fireEvent.press(view.getByText('Cancel'));
+    await fireEvent.press(view.getByText('Alex'));
+    expect(view.getByTestId('message-input').props.value).toBe('Rejected A');
+    expect(view.getByText('Message A was rejected.')).toBeTruthy();
+    expect(view.queryByText('Retry original message')).toBeNull();
+  });
+
+  it('restores a rejected draft when its conversation is reopened before the response', async () => {
+    const send = deferred<void>();
+    mockSendMessage.mockReturnValueOnce(send.promise);
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Rejected draft');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await fireEvent.press(view.getByText('Cancel'));
+    await fireEvent.press(view.getByText('Alex'));
+    expect(view.getByTestId('message-input').props.value).toBe('');
+    await act(async () => {
+      send.reject(new MessageInsertRejectedError('Message was rejected.'));
+      await send.promise.catch(() => {});
+    });
+    expect(view.getByTestId('message-input').props.value).toBe('Rejected draft');
+    expect(view.getByText('Message was rejected.')).toBeTruthy();
+    expect(view.queryByText('Retry original message')).toBeNull();
+  });
+
+  it('keeps an unclassified error unresolved and blocks a new message', async () => {
+    mockSendMessage.mockRejectedValueOnce({ code: 'unknown', message: 'Unknown outcome' });
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Original');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(await view.findByText('Unverified message: Original')).toBeTruthy();
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Different draft');
+    expect(view.getByRole('button', { name: 'Send' }).props.accessibilityState?.disabled).toBe(true);
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    await fireEvent.press(view.getByRole('button', { name: 'Retry original message' }));
+    await waitFor(() => expect(view.queryByText('Unverified message: Original')).toBeNull());
+    expect(mockSendMessage.mock.calls[1][0]).toEqual(mockSendMessage.mock.calls[0][0]);
+    expect(view.getByTestId('message-input').props.value).toBe('Different draft');
+  });
+
+  it('keeps an ambiguous original unresolved even when a later retry is definitively rejected', async () => {
+    mockSendMessage
+      .mockRejectedValueOnce(new Error('Connection lost'))
+      .mockRejectedValueOnce(new MessageInsertRejectedError('The retry was rejected.'));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Original');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await view.findByText('Connection lost');
+    await fireEvent.changeText(view.getByTestId('message-input'), 'New draft');
+    await fireEvent.press(view.getByRole('button', { name: 'Retry original message' }));
+    expect(await view.findByText(/original delivery is still unverified/)).toBeTruthy();
+    expect(view.getByText('Unverified message: Original')).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Send' }).props.accessibilityState?.disabled).toBe(true);
+    expect(mockSendMessage.mock.calls[1][0]).toEqual(mockSendMessage.mock.calls[0][0]);
+    await fireEvent.press(view.getByRole('button', { name: 'Retry original message' }));
+    await waitFor(() => expect(view.queryByText('Unverified message: Original')).toBeNull());
+    expect(mockSendMessage.mock.calls[2][0]).toEqual(mockSendMessage.mock.calls[0][0]);
+    expect(view.getByTestId('message-input').props.value).toBe('New draft');
+  });
+
+  it.each([
+    [' Hello ', '  Hello  ', '  Hello  '],
+    [' Hello ', ' Hello ', ''],
+  ])('preserves an edited draft or clears the unchanged exact draft after retry', async (original, edited, expected) => {
+    mockSendMessage.mockRejectedValueOnce(new Error('Connection lost'));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await fireEvent.changeText(await view.findByTestId('message-input'), original);
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await view.findByText('Connection lost');
+    await fireEvent.changeText(view.getByTestId('message-input'), edited);
+    await fireEvent.press(view.getByRole('button', { name: 'Retry original message' }));
+    await waitFor(() => expect(view.queryByText('Unverified message: Hello')).toBeNull());
+    expect(view.getByTestId('message-input').props.value).toBe(expected);
+    expect(mockSendMessage.mock.calls[1][0]).toEqual(mockSendMessage.mock.calls[0][0]);
+  });
+
+  it('retries the exact unresolved message while preserving edits for a new send', async () => {
+    mockSendMessage
+      .mockRejectedValueOnce(new Error('Connection lost'))
+      .mockRejectedValueOnce(new Error('Still offline'));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    const input = await view.findByTestId('message-input');
+    await fireEvent.changeText(input, '  Original body  ');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await view.findByText('Connection lost');
+    const original = mockSendMessage.mock.calls[0][0];
+    expect(original).toEqual({
+      id: 'message-uuid-1', conversationId: 'conversation-1',
+      senderId: 'current-profile', body: 'Original body',
+    });
+    await fireEvent.changeText(input, 'Edited draft');
+    expect(view.getByRole('button', { name: 'Send' }).props.accessibilityState?.disabled).toBe(true);
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(view.getByText('Unverified message: Original body')).toBeTruthy();
+    await fireEvent.press(view.getByRole('button', { name: 'Retry original message' }));
+    await view.findByText('Still offline');
+    expect(mockSendMessage.mock.calls[1][0]).toEqual(original);
+    await fireEvent.press(view.getByRole('button', { name: 'Retry original message' }));
+    await waitFor(() => expect(view.queryByText('Unverified message: Original body')).toBeNull());
+    expect(mockSendMessage.mock.calls[2][0]).toEqual(original);
+    expect(view.getByTestId('message-input').props.value).toBe('Edited draft');
+    await waitFor(() => expect(view.getByRole('button', { name: 'Send' }).props.accessibilityState?.disabled).toBe(false));
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(mockSendMessage.mock.calls[3][0]).toEqual({
+      ...original, id: 'message-uuid-2', body: 'Edited draft',
+    });
+  });
+
+  it('assigns a new ID to a second intentional message with the same body', async () => {
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Same text');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(view.getByTestId('message-input').props.editable).toBe(true));
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Same text');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    expect(mockSendMessage.mock.calls[0][0].body).toBe('Same text');
+    expect(mockSendMessage.mock.calls[1][0].body).toBe('Same text');
+    expect(mockSendMessage.mock.calls[0][0].id).not.toBe(mockSendMessage.mock.calls[1][0].id);
+  });
+
+  it('keeps confirmed delivery distinct from a failed history refresh', async () => {
+    mockGetConversationMessages
+      .mockResolvedValueOnce(makePage([]))
+      .mockRejectedValueOnce(new Error('History refresh failed'));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await view.findByTestId('history-empty');
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Delivered');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(await view.findByText('History refresh failed')).toBeTruthy();
+    expect(view.queryByText('Retry original message')).toBeNull();
+    expect(view.getByTestId('message-input').props.value).toBe('');
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps confirmed delivery distinct from a failed conversation refresh', async () => {
+    mockGetConversations
+      .mockResolvedValueOnce([makeConversation()])
+      .mockRejectedValueOnce(new Error('Preview refresh failed'));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Delivered');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(await view.findByText('Preview refresh failed')).toBeTruthy();
+    expect(view.queryByText('Retry original message')).toBeNull();
+    expect(view.getByTestId('message-input').props.value).toBe('');
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('clears the draft when closing the modal or switching conversations', async () => {

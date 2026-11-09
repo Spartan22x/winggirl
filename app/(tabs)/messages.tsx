@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { randomUUID } from 'expo-crypto';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -20,11 +21,14 @@ import {
   getConversations,
   sendMessage as sendMessageToSupabase,
 } from '@/src/data/api';
-import type { Conversation, Message, MessageCursor } from '@/src/data/types';
+import { MessageInsertRejectedError } from '@/src/data/message-send-error';
+import type { Conversation, Message, MessageCursor, PendingMessage } from '@/src/data/types';
 import { useAuth } from '@/src/auth/AuthProvider';
 import { colors, radii, spacing } from '@/src/theme';
 
 const INITIAL_MESSAGE_PAGE_SIZE = 30;
+
+type PendingSend = Readonly<{ message: PendingMessage; draft: string }>;
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -71,6 +75,7 @@ export default function MessagesScreen() {
   const [draftMessage, setDraftMessage] = useState('');
   const [sendingConversations, setSendingConversations] = useState<Set<string>>(new Set());
   const [sendErrors, setSendErrors] = useState<Map<string, string>>(new Map());
+  const [pendingMessages, setPendingMessages] = useState<Map<string, PendingSend>>(new Map());
 
   const hasLoadedListRef = useRef(false);
   const listRequestRef = useRef(0);
@@ -88,6 +93,8 @@ export default function MessagesScreen() {
   const scrollToLatestRef = useRef(false);
   const initialScrollPendingRef = useRef(false);
   const sendingConversationsRef = useRef<Set<string>>(new Set());
+  const pendingMessagesRef = useRef<Map<string, PendingSend>>(new Map());
+  const rejectedDraftsRef = useRef<Map<string, string>>(new Map());
   const handledRequestedConversationIdRef = useRef<string | null>(null);
   const profileId = user?.id;
 
@@ -96,6 +103,7 @@ export default function MessagesScreen() {
     : undefined;
   const sending = activeConversationId ? sendingConversations.has(activeConversationId) : false;
   const sendError = activeConversationId ? sendErrors.get(activeConversationId) : undefined;
+  const pendingMessage = activeConversationId ? pendingMessages.get(activeConversationId) : undefined;
 
   const loadConversations = useCallback(async (pullToRefresh = false): Promise<Conversation[] | null> => {
     if (!profileId) return null;
@@ -164,7 +172,8 @@ export default function MessagesScreen() {
           setHistoryReadyConversationId(null);
           activeConversationIdRef.current = requestedConversation.id;
         }
-        setDraftMessage('');
+        setDraftMessage(rejectedDraftsRef.current.get(requestedConversation.id) ?? '');
+        rejectedDraftsRef.current.delete(requestedConversation.id);
         setActiveConversationId(requestedConversation.id);
       } else if (!nextConversations) {
         setOpenConversationError(
@@ -254,7 +263,8 @@ export default function MessagesScreen() {
     if (activeConversationIdRef.current !== conversationId) {
       historyReadyConversationIdRef.current = null;
       setHistoryReadyConversationId(null);
-      setDraftMessage('');
+      setDraftMessage(rejectedDraftsRef.current.get(conversationId) ?? '');
+      rejectedDraftsRef.current.delete(conversationId);
       setActiveConversationId(conversationId);
       activeConversationIdRef.current = conversationId;
     }
@@ -311,10 +321,10 @@ export default function MessagesScreen() {
     }
   };
 
-  const sendMessage = async () => {
-    if (!activeConversationId || !draftMessage.trim()
-      || sendingConversationsRef.current.has(activeConversationId)) return;
-    const conversationId = activeConversationId;
+  const sendPendingMessage = async (pending: PendingSend, isRetry = false) => {
+    const { message, draft } = pending;
+    const conversationId = message.conversationId;
+    if (sendingConversationsRef.current.has(conversationId)) return;
     sendingConversationsRef.current.add(conversationId);
     setSendingConversations(new Set(sendingConversationsRef.current));
     setSendErrors((current) => {
@@ -323,12 +333,36 @@ export default function MessagesScreen() {
       return next;
     });
     try {
-      await sendMessageToSupabase(conversationId, draftMessage.trim());
-      const isActiveConversation = activeConversationIdRef.current === conversationId;
-      if (isActiveConversation) {
-        setDraftMessage('');
-        scrollToLatestRef.current = true;
+      await sendMessageToSupabase(message);
+    } catch (error) {
+      if (!isRetry && error instanceof MessageInsertRejectedError) {
+        pendingMessagesRef.current.delete(conversationId);
+        setPendingMessages(new Map(pendingMessagesRef.current));
+        if (activeConversationIdRef.current === conversationId) {
+          setDraftMessage((current) => current || draft);
+        } else {
+          rejectedDraftsRef.current.set(conversationId, draft);
+        }
       }
+      setSendErrors((current) => new Map(current).set(
+        conversationId,
+        isRetry && error instanceof MessageInsertRejectedError
+          ? 'This retry was rejected, but the original delivery is still unverified. Please retry the original message.'
+          : getErrorMessage(error, 'Your message could not be verified. Please retry the original message.'),
+      ));
+      sendingConversationsRef.current.delete(conversationId);
+      setSendingConversations(new Set(sendingConversationsRef.current));
+      return;
+    }
+
+    pendingMessagesRef.current.delete(conversationId);
+    setPendingMessages(new Map(pendingMessagesRef.current));
+    const isActiveConversation = activeConversationIdRef.current === conversationId;
+    if (isActiveConversation) {
+      setDraftMessage((current) => current === draft ? '' : current);
+      scrollToLatestRef.current = true;
+    }
+    try {
       const existingListRequest = conversationLoadPromiseRef.current;
       const refreshConversations = async () => {
         if (existingListRequest) await existingListRequest;
@@ -344,14 +378,27 @@ export default function MessagesScreen() {
         listRef.current?.scrollToEnd({ animated: true });
       }
     } catch (error) {
-      setSendErrors((current) => new Map(current).set(
-        conversationId,
-        getErrorMessage(error, 'Your message could not be sent. Please try again.'),
-      ));
+      setListError(getErrorMessage(error, 'Message sent, but conversations could not be refreshed.'));
     } finally {
       sendingConversationsRef.current.delete(conversationId);
       setSendingConversations(new Set(sendingConversationsRef.current));
     }
+  };
+
+  const sendMessage = () => {
+    if (!activeConversationId || !profileId || !draftMessage.trim()
+      || sendingConversationsRef.current.has(activeConversationId)
+      || pendingMessagesRef.current.has(activeConversationId)) return;
+    const message: PendingMessage = {
+      id: randomUUID(),
+      conversationId: activeConversationId,
+      senderId: profileId,
+      body: draftMessage.trim(),
+    };
+    const pending: PendingSend = { message, draft: draftMessage };
+    pendingMessagesRef.current.set(activeConversationId, pending);
+    setPendingMessages(new Map(pendingMessagesRef.current));
+    void sendPendingMessage(pending);
   };
 
   const retryHistory = () => {
@@ -543,11 +590,18 @@ export default function MessagesScreen() {
                 <PrimaryButton
                   label={sending ? 'Sending…' : 'Send'}
                   onPress={() => { void sendMessage(); }}
-                  disabled={sending || !draftMessage.trim()}
+                  disabled={sending || Boolean(pendingMessage) || !draftMessage.trim()}
                   style={styles.sendButton}
                 />
               </View>
               {sendError ? <Text accessibilityRole="alert" style={styles.errorText}>{sendError}</Text> : null}
+              {pendingMessage && !sending ? (
+                <View>
+                  <Text style={styles.stateText}>Unverified message: {pendingMessage.message.body}</Text>
+                  <Text style={styles.stateText}>Retry the original before sending a new message. Your draft will be kept.</Text>
+                  <SecondaryButton label="Retry original message" onPress={() => { void sendPendingMessage(pendingMessage, true); }} />
+                </View>
+              ) : null}
               <SecondaryButton label="Cancel" onPress={closeConversation} style={styles.cancelButton} />
             </Card>
           </KeyboardAvoidingView>
