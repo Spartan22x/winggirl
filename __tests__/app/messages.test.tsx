@@ -1,4 +1,5 @@
 import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
+import { FlatList } from 'react-native';
 import type { Conversation, Message, MessageCursor, MessagePage } from '@/src/data/types';
 import MessagesScreen from '@/app/(tabs)/messages';
 
@@ -241,6 +242,122 @@ describe('MessagesScreen conversation list', () => {
 });
 
 describe('MessagesScreen conversation history', () => {
+  it.each(['content-first', 'viewport-first'] as const)(
+    'positions a loaded initial page once after layout (%s)',
+    async (layoutOrder) => {
+      const historyResponse = deferred<MessagePage>();
+      const scroll = jest.spyOn(FlatList.prototype, 'scrollToOffset').mockImplementation(() => {});
+      mockGetConversationMessages.mockReturnValue(historyResponse.promise);
+      const view = await render(<MessagesScreen />);
+      await fireEvent.press(await view.findByText('Alex'));
+      expect(view.queryByTestId('message-history')).toBeNull();
+      expect(scroll).not.toHaveBeenCalled();
+
+      const page = Array.from({ length: 30 }, (_, index) => makeMessage(
+        `message-${index}`, `Message ${index}`, new Date(2026, 10, 4, 10, index).toISOString(),
+      ));
+      await act(async () => {
+        historyResponse.resolve(makePage(page));
+        await historyResponse.promise;
+      });
+      await view.findByText('Message 29');
+      const history = view.getByTestId('message-history');
+      const content = async () => fireEvent(history, 'contentSizeChange', 300, 1800);
+      const viewport = async () => fireEvent(history, 'layout', {
+        nativeEvent: { layout: { x: 0, y: 0, width: 300, height: 400 } },
+      });
+      if (layoutOrder === 'content-first') {
+        await content();
+        expect(scroll).not.toHaveBeenCalled();
+        await viewport();
+      } else {
+        await viewport();
+        expect(scroll).not.toHaveBeenCalled();
+        await content();
+      }
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(scroll).toHaveBeenCalledWith({ offset: 1400, animated: false });
+      await fireEvent(history, 'contentSizeChange', 300, 1900);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      scroll.mockRestore();
+    },
+  );
+
+  it('preserves the reading position on prepend and resets positioning on conversation switch', async () => {
+    const scroll = jest.spyOn(FlatList.prototype, 'scrollToOffset').mockImplementation(() => {});
+    const cursor = { createdAt: '2026-11-04T10:01:00.000Z', id: 'middle' };
+    mockGetConversations.mockResolvedValue([
+      makeConversation(),
+      makeConversation({ id: 'conversation-2', title: 'Grace' }),
+    ]);
+    mockGetConversationMessages
+      .mockResolvedValueOnce(makePage([makeMessage('middle', 'Middle', cursor.createdAt)], true, cursor))
+      .mockResolvedValueOnce(makePage([makeMessage('older', 'Older', '2026-11-04T10:00:00.000Z')]))
+      .mockResolvedValueOnce(makePage([makeMessage('grace', 'Grace history', '2026-11-04T11:00:00.000Z')]));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await view.findByText('Middle');
+    let history = view.getByTestId('message-history');
+    await fireEvent(history, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 300, height: 400 } } });
+    await fireEvent(history, 'contentSizeChange', 300, 1000);
+    expect(scroll).toHaveBeenLastCalledWith({ offset: 600, animated: false });
+    await fireEvent.scroll(history, { nativeEvent: { contentOffset: { x: 0, y: 150 }, contentSize: { width: 300, height: 1000 }, layoutMeasurement: { width: 300, height: 400 } } });
+    await fireEvent.press(view.getByText('Load older messages'));
+    await view.findByText('Older');
+    await fireEvent(history, 'contentSizeChange', 300, 1300);
+    expect(scroll).toHaveBeenLastCalledWith({ offset: 450, animated: false });
+
+    await fireEvent.press(view.getByText('Grace'));
+    await view.findByText('Grace history');
+    history = view.getByTestId('message-history');
+    await fireEvent(history, 'contentSizeChange', 300, 800);
+    expect(scroll).toHaveBeenCalledTimes(2);
+    await fireEvent(history, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 300, height: 300 } } });
+    expect(scroll).toHaveBeenLastCalledWith({ offset: 500, animated: false });
+    expect(scroll).toHaveBeenCalledTimes(3);
+    scroll.mockRestore();
+  });
+
+  it('does not force initial positioning after the user starts scrolling', async () => {
+    const scroll = jest.spyOn(FlatList.prototype, 'scrollToOffset').mockImplementation(() => {});
+    mockGetConversationMessages.mockResolvedValue(makePage([
+      makeMessage('newest', 'Newest message', '2026-11-04T10:00:00.000Z'),
+    ]));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await view.findByText('Newest message');
+    const history = view.getByTestId('message-history');
+    await fireEvent(history, 'scrollBeginDrag', { nativeEvent: {} });
+    await fireEvent(history, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 300, height: 400 } } });
+    await fireEvent(history, 'contentSizeChange', 300, 1000);
+    expect(scroll).not.toHaveBeenCalled();
+    scroll.mockRestore();
+  });
+
+  it('waits for fresh history when reopening the same conversation', async () => {
+    const refreshedHistory = deferred<MessagePage>();
+    mockGetConversationMessages
+      .mockResolvedValueOnce(makePage([
+        makeMessage('old', 'Previous history', '2026-11-04T10:00:00.000Z'),
+      ]))
+      .mockReturnValueOnce(refreshedHistory.promise);
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await view.findByText('Previous history');
+    await fireEvent.press(view.getByText('Cancel'));
+    await fireEvent.press(view.getByText('Alex'));
+    expect(await view.findByTestId('history-loading')).toBeTruthy();
+    expect(view.queryByTestId('message-history')).toBeNull();
+    expect(view.queryByText('Previous history')).toBeNull();
+    await act(async () => {
+      refreshedHistory.resolve(makePage([
+        makeMessage('new', 'Fresh history', '2026-11-04T10:01:00.000Z'),
+      ]));
+      await refreshedHistory.promise;
+    });
+    expect(await view.findByText('Fresh history')).toBeTruthy();
+  });
+
   it('loads the newest 30 messages when a conversation opens', async () => {
     const newest = makeMessage('newest', 'Newest message', '2026-11-04T10:00:00.000Z');
     mockGetConversationMessages.mockResolvedValue(makePage([newest]));
@@ -270,6 +387,29 @@ describe('MessagesScreen conversation history', () => {
     await fireEvent.press(view.getByText('Try again'));
     expect(await view.findByText('Recovered')).toBeTruthy();
     expect(mockGetConversationMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it('loads the sent message if a send finishes before initial history', async () => {
+    const initialHistory = deferred<MessagePage>();
+    mockGetConversationMessages
+      .mockReturnValueOnce(initialHistory.promise)
+      .mockResolvedValueOnce(makePage([
+        makeMessage('sent', 'Sent while loading', '2026-11-04T10:01:00.000Z', true),
+      ]));
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    expect(await view.findByTestId('history-loading')).toBeTruthy();
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Sent while loading');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    expect(await view.findByText('Sent while loading')).toBeTruthy();
+    await act(async () => {
+      initialHistory.resolve(makePage([
+        makeMessage('stale', 'Stale history', '2026-11-04T10:00:00.000Z'),
+      ]));
+      await initialHistory.promise;
+    });
+    expect(view.queryByText('Stale history')).toBeNull();
+    expect(view.getByTestId('message-history')).toBeTruthy();
   });
 
   it('loads older messages, prepends chronologically, and deduplicates message IDs', async () => {
@@ -576,10 +716,10 @@ describe('MessagesScreen composer', () => {
           },
         }),
       ];
-      const sendA = deferred<void>();
-      const sendB = deferred<void>();
-      mockGetConversations.mockResolvedValue(conversations);
-      mockSendMessage.mockReturnValueOnce(sendA.promise).mockReturnValueOnce(sendB.promise);
+        const sendA = deferred<void>();
+        const sendB = deferred<void>();
+        mockGetConversations.mockResolvedValue(conversations);
+        mockSendMessage.mockReturnValueOnce(sendA.promise).mockReturnValueOnce(sendB.promise);
 
       const view = await render(<MessagesScreen />);
       await fireEvent.press(await view.findByText('Alex'));
@@ -594,6 +734,7 @@ describe('MessagesScreen composer', () => {
       await fireEvent.changeText(view.getByTestId('message-input'), 'Message B');
       await fireEvent.press(view.getByRole('button', { name: 'Send' }));
       expect(await view.findByText('Sending…')).toBeTruthy();
+      expect(view.getByTestId('message-input').props.value).toBe('Message B');
       expect(mockSendMessage).toHaveBeenNthCalledWith(1, 'conversation-1', 'Message A');
       expect(mockSendMessage).toHaveBeenNthCalledWith(2, 'conversation-2', 'Message B');
 
@@ -602,11 +743,13 @@ describe('MessagesScreen composer', () => {
       const pendingA = view.getByRole('button', { name: 'Sending…' });
       expect(pendingA.props.accessibilityState?.disabled).toBe(true);
       expect(view.getByTestId('message-input').props.editable).toBe(false);
+      expect(view.getByTestId('message-input').props.value).toBe('');
       await fireEvent.press(pendingA);
       expect(mockSendMessage).toHaveBeenCalledTimes(2);
       await fireEvent.press(view.getByText('Cancel'));
       await fireEvent.press(view.getByText('Grace'));
       expect(view.getByRole('button', { name: 'Sending…' })).toBeTruthy();
+      expect(view.getByTestId('message-input').props.value).toBe('');
 
       const firstSend = firstToFinish === 'A' ? sendA : sendB;
       const secondSend = firstToFinish === 'A' ? sendB : sendA;
@@ -659,8 +802,14 @@ describe('MessagesScreen composer', () => {
     ];
     const sendA = deferred<void>();
     const sendB = deferred<void>();
+    let bDelivered = false;
     mockGetConversations.mockResolvedValue(conversations);
     mockSendMessage.mockReturnValueOnce(sendA.promise).mockReturnValueOnce(sendB.promise);
+    mockGetConversationMessages.mockImplementation(async (conversationId) => (
+      conversationId === 'conversation-2' && bDelivered
+        ? makePage([makeMessage('b-sent', 'Delivered B', '2026-11-04T10:01:00.000Z', true)])
+        : makePage([])
+    ));
 
     const view = await render(<MessagesScreen />);
     await fireEvent.press(await view.findByText('Alex'));
@@ -679,9 +828,11 @@ describe('MessagesScreen composer', () => {
     expect(view.queryByText('A failed')).toBeNull();
     expect(view.getByRole('button', { name: 'Sending…' })).toBeTruthy();
     await act(async () => {
+      bDelivered = true;
       sendB.resolve(undefined);
       await sendB.promise;
     });
+    await view.findByText('Delivered B');
     await waitFor(() => expect(view.getByTestId('message-input').props.editable).toBe(true));
     expect(view.queryByText('A failed')).toBeNull();
 
@@ -689,10 +840,18 @@ describe('MessagesScreen composer', () => {
     await fireEvent.press(view.getByText('Alex'));
     expect(await view.findByText('A failed')).toBeTruthy();
     expect(view.getByTestId('message-input').props.value).toBe('');
-    await fireEvent.changeText(view.getByTestId('message-input'), 'Retry A');
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Message A');
     await fireEvent.press(view.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(view.queryByText('A failed')).toBeNull());
-    expect(mockSendMessage).toHaveBeenLastCalledWith('conversation-1', 'Retry A');
+    expect(mockSendMessage).toHaveBeenCalledTimes(3);
+    expect(mockSendMessage).toHaveBeenNthCalledWith(1, 'conversation-1', 'Message A');
+    expect(mockSendMessage).toHaveBeenNthCalledWith(2, 'conversation-2', 'Message B');
+    expect(mockSendMessage).toHaveBeenNthCalledWith(3, 'conversation-1', 'Message A');
+    await fireEvent.press(view.getByText('Cancel'));
+    await fireEvent.press(view.getByText('Grace'));
+    const history = view.getByTestId('message-history');
+    expect(await within(history).findAllByText('Delivered B')).toHaveLength(1);
+    expect(mockSendMessage).toHaveBeenCalledTimes(3);
   });
 
   it('refreshes previews again when another send completes during a list request', async () => {
@@ -780,6 +939,7 @@ describe('MessagesScreen composer', () => {
   });
 
   it('sends successfully, clears the draft, refreshes history and list, and keeps the latest message visible', async () => {
+    const scrollToEnd = jest.spyOn(FlatList.prototype, 'scrollToEnd').mockImplementation(() => {});
     const updatedMessage = makeMessage(
       'sent-message',
       'Hello there',
@@ -800,6 +960,10 @@ describe('MessagesScreen composer', () => {
     await waitFor(() => expect(mockGetConversations).toHaveBeenCalledTimes(2));
     expect(mockGetConversationMessages).toHaveBeenCalledTimes(2);
     expect(view.getByTestId('message-input').props.value).toBe('');
+    await waitFor(() => expect(scrollToEnd).toHaveBeenCalledWith({ animated: true }));
+    await fireEvent(view.getByTestId('message-history'), 'contentSizeChange', 300, 1000);
+    expect(scrollToEnd).toHaveBeenCalledWith({ animated: false });
+    scrollToEnd.mockRestore();
   });
 
   it('preserves the draft and displays an error when sending fails', async () => {

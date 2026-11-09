@@ -62,6 +62,7 @@ export default function MessagesScreen() {
   const [openConversationError, setOpenConversationError] = useState<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [historyReadyConversationId, setHistoryReadyConversationId] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyHasMore, setHistoryHasMore] = useState(false);
@@ -75,14 +76,17 @@ export default function MessagesScreen() {
   const listRequestRef = useRef(0);
   const conversationLoadPromiseRef = useRef<Promise<Conversation[] | null> | null>(null);
   const historyRequestRef = useRef(0);
+  const historyReadyConversationIdRef = useRef<string | null>(null);
   const activeConversationIdRef = useRef<string | null>(null);
   const hasLoadedOlderPageRef = useRef(false);
   const paginationLockRef = useRef(false);
   const listRef = useRef<FlatList<Message>>(null);
   const listContentHeightRef = useRef(0);
+  const listViewportHeightRef = useRef(0);
   const listOffsetRef = useRef(0);
   const preserveScrollAfterPrependRef = useRef(false);
   const scrollToLatestRef = useRef(false);
+  const initialScrollPendingRef = useRef(false);
   const sendingConversationsRef = useRef<Set<string>>(new Set());
   const handledRequestedConversationIdRef = useRef<string | null>(null);
   const profileId = user?.id;
@@ -155,7 +159,11 @@ export default function MessagesScreen() {
         (conversation) => conversation.id === requestedConversationId,
       );
       if (requestedConversation) {
-        activeConversationIdRef.current = requestedConversation.id;
+        if (activeConversationIdRef.current !== requestedConversation.id) {
+          historyReadyConversationIdRef.current = null;
+          setHistoryReadyConversationId(null);
+          activeConversationIdRef.current = requestedConversation.id;
+        }
         setDraftMessage('');
         setActiveConversationId(requestedConversation.id);
       } else if (!nextConversations) {
@@ -178,12 +186,17 @@ export default function MessagesScreen() {
     if (reset) {
       hasLoadedOlderPageRef.current = false;
       setMessages([]);
+      setHistoryReadyConversationId(null);
+      historyReadyConversationIdRef.current = null;
       setHistoryHasMore(false);
       setHistoryCursor(null);
       setHistoryLoading(true);
       listContentHeightRef.current = 0;
+      listViewportHeightRef.current = 0;
       listOffsetRef.current = 0;
-      scrollToLatestRef.current = true;
+      preserveScrollAfterPrependRef.current = false;
+      scrollToLatestRef.current = false;
+      initialScrollPendingRef.current = false;
     }
     setHistoryError(null);
     try {
@@ -194,12 +207,15 @@ export default function MessagesScreen() {
         requestId === historyRequestRef.current
         && activeConversationIdRef.current === conversationId
       ) {
-        scrollToLatestRef.current = true;
         if (reset) {
+          initialScrollPendingRef.current = page.messages.length > 0;
           setMessages(page.messages);
           setHistoryHasMore(page.hasMore);
           setHistoryCursor(page.nextCursor);
+          historyReadyConversationIdRef.current = conversationId;
+          setHistoryReadyConversationId(conversationId);
         } else {
+          scrollToLatestRef.current = true;
           setMessages((currentMessages) => mergeMessages(currentMessages, page.messages));
           if (!hasLoadedOlderPageRef.current) {
             setHistoryHasMore(page.hasMore);
@@ -236,6 +252,8 @@ export default function MessagesScreen() {
 
   const openConversation = (conversationId: string) => {
     if (activeConversationIdRef.current !== conversationId) {
+      historyReadyConversationIdRef.current = null;
+      setHistoryReadyConversationId(null);
       setDraftMessage('');
       setActiveConversationId(conversationId);
       activeConversationIdRef.current = conversationId;
@@ -245,6 +263,8 @@ export default function MessagesScreen() {
   const closeConversation = () => {
     historyRequestRef.current += 1;
     activeConversationIdRef.current = null;
+    historyReadyConversationIdRef.current = null;
+    setHistoryReadyConversationId(null);
     paginationLockRef.current = false;
     setActiveConversationId(null);
     setDraftMessage('');
@@ -315,7 +335,9 @@ export default function MessagesScreen() {
         await loadConversations();
       };
       await Promise.all([
-        isActiveConversation ? loadLatestHistory(conversationId, false) : Promise.resolve(),
+        isActiveConversation
+          ? loadLatestHistory(conversationId, historyReadyConversationIdRef.current !== conversationId)
+          : Promise.resolve(),
         refreshConversations(),
       ]);
       if (activeConversationIdRef.current === conversationId) {
@@ -336,6 +358,21 @@ export default function MessagesScreen() {
     if (activeConversationId) void loadLatestHistory(activeConversationId, messages.length === 0);
   };
 
+  const positionInitialHistory = () => {
+    if (
+      initialScrollPendingRef.current
+      && listContentHeightRef.current > 0
+      && listViewportHeightRef.current > 0
+      && listRef.current
+    ) {
+      listRef.current.scrollToOffset({
+        offset: Math.max(0, listContentHeightRef.current - listViewportHeightRef.current),
+        animated: false,
+      });
+      initialScrollPendingRef.current = false;
+    }
+  };
+
   const handleContentSizeChange = (_width: number, height: number) => {
     if (preserveScrollAfterPrependRef.current) {
       const addedHeight = height - listContentHeightRef.current;
@@ -349,6 +386,7 @@ export default function MessagesScreen() {
       scrollToLatestRef.current = false;
     }
     listContentHeightRef.current = height;
+    positionInitialHistory();
   };
 
   const renderMessage = ({ item: message }: { item: Message }) => (
@@ -455,10 +493,12 @@ export default function MessagesScreen() {
                 </View>
               ) : null}
 
-              <FlatList
+              {historyReadyConversationId === activeConversationId ? <FlatList
+                key={activeConversationId}
                 ref={listRef}
                 testID="message-history"
                 data={messages}
+                initialNumToRender={INITIAL_MESSAGE_PAGE_SIZE}
                 keyExtractor={(message) => message.id}
                 renderItem={renderMessage}
                 style={[styles.chatBody, { maxHeight: windowHeight * 0.52, minHeight: 100 }]}
@@ -466,6 +506,11 @@ export default function MessagesScreen() {
                 keyboardShouldPersistTaps="handled"
                 onScroll={(event) => {
                   listOffsetRef.current = event.nativeEvent.contentOffset.y;
+                }}
+                onScrollBeginDrag={() => { initialScrollPendingRef.current = false; }}
+                onLayout={(event) => {
+                  listViewportHeightRef.current = event.nativeEvent.layout.height;
+                  positionInitialHistory();
                 }}
                 scrollEventThrottle={16}
                 onContentSizeChange={handleContentSizeChange}
@@ -482,7 +527,7 @@ export default function MessagesScreen() {
                     )}
                   </View>
                 ) : null}
-              />
+              /> : null}
 
               <View style={styles.composer}>
                 <TextInput
