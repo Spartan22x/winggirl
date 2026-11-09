@@ -68,8 +68,8 @@ export default function MessagesScreen() {
   const [historyCursor, setHistoryCursor] = useState<MessageCursor | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [draftMessage, setDraftMessage] = useState('');
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [sendingConversations, setSendingConversations] = useState<Set<string>>(new Set());
+  const [sendErrors, setSendErrors] = useState<Map<string, string>>(new Map());
 
   const hasLoadedListRef = useRef(false);
   const listRequestRef = useRef(0);
@@ -83,13 +83,15 @@ export default function MessagesScreen() {
   const listOffsetRef = useRef(0);
   const preserveScrollAfterPrependRef = useRef(false);
   const scrollToLatestRef = useRef(false);
-  const sendingRef = useRef(false);
+  const sendingConversationsRef = useRef<Set<string>>(new Set());
   const handledRequestedConversationIdRef = useRef<string | null>(null);
   const profileId = user?.id;
 
   const activeConversation = activeConversationId
     ? conversations.find((conversation) => conversation.id === activeConversationId)
     : undefined;
+  const sending = activeConversationId ? sendingConversations.has(activeConversationId) : false;
+  const sendError = activeConversationId ? sendErrors.get(activeConversationId) : undefined;
 
   const loadConversations = useCallback(async (pullToRefresh = false): Promise<Conversation[] | null> => {
     if (!profileId) return null;
@@ -155,7 +157,6 @@ export default function MessagesScreen() {
       if (requestedConversation) {
         activeConversationIdRef.current = requestedConversation.id;
         setDraftMessage('');
-        setSendError(null);
         setActiveConversationId(requestedConversation.id);
       } else if (!nextConversations) {
         setOpenConversationError(
@@ -236,7 +237,6 @@ export default function MessagesScreen() {
   const openConversation = (conversationId: string) => {
     if (activeConversationIdRef.current !== conversationId) {
       setDraftMessage('');
-      setSendError(null);
       setActiveConversationId(conversationId);
       activeConversationIdRef.current = conversationId;
     }
@@ -248,7 +248,6 @@ export default function MessagesScreen() {
     paginationLockRef.current = false;
     setActiveConversationId(null);
     setDraftMessage('');
-    setSendError(null);
   };
 
   const loadOlderMessages = async () => {
@@ -293,11 +292,16 @@ export default function MessagesScreen() {
   };
 
   const sendMessage = async () => {
-    if (!activeConversationId || !draftMessage.trim() || sendingRef.current) return;
+    if (!activeConversationId || !draftMessage.trim()
+      || sendingConversationsRef.current.has(activeConversationId)) return;
     const conversationId = activeConversationId;
-    sendingRef.current = true;
-    setSending(true);
-    setSendError(null);
+    sendingConversationsRef.current.add(conversationId);
+    setSendingConversations(new Set(sendingConversationsRef.current));
+    setSendErrors((current) => {
+      const next = new Map(current);
+      next.delete(conversationId);
+      return next;
+    });
     try {
       await sendMessageToSupabase(conversationId, draftMessage.trim());
       const isActiveConversation = activeConversationIdRef.current === conversationId;
@@ -305,20 +309,26 @@ export default function MessagesScreen() {
         setDraftMessage('');
         scrollToLatestRef.current = true;
       }
+      const existingListRequest = conversationLoadPromiseRef.current;
+      const refreshConversations = async () => {
+        if (existingListRequest) await existingListRequest;
+        await loadConversations();
+      };
       await Promise.all([
         isActiveConversation ? loadLatestHistory(conversationId, false) : Promise.resolve(),
-        loadConversations(),
+        refreshConversations(),
       ]);
       if (activeConversationIdRef.current === conversationId) {
         listRef.current?.scrollToEnd({ animated: true });
       }
     } catch (error) {
-      if (activeConversationIdRef.current === conversationId) {
-        setSendError(getErrorMessage(error, 'Your message could not be sent. Please try again.'));
-      }
+      setSendErrors((current) => new Map(current).set(
+        conversationId,
+        getErrorMessage(error, 'Your message could not be sent. Please try again.'),
+      ));
     } finally {
-      sendingRef.current = false;
-      setSending(false);
+      sendingConversationsRef.current.delete(conversationId);
+      setSendingConversations(new Set(sendingConversationsRef.current));
     }
   };
 

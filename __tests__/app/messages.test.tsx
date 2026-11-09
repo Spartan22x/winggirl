@@ -559,6 +559,201 @@ describe('MessagesScreen conversation history', () => {
 });
 
 describe('MessagesScreen composer', () => {
+  it.each(['A', 'B'] as const)(
+    'allows independent sends and clears only the completed conversation when %s finishes first',
+    async (firstToFinish) => {
+      const conversations = [
+        makeConversation(),
+        makeConversation({
+          id: 'conversation-2',
+          title: 'Grace',
+          directRecipientId: 'grace-profile',
+          otherParticipant: {
+            profileId: 'grace-profile',
+            firstName: 'Grace',
+            profileImageUrl: null,
+            avatarColor: null,
+          },
+        }),
+      ];
+      const sendA = deferred<void>();
+      const sendB = deferred<void>();
+      mockGetConversations.mockResolvedValue(conversations);
+      mockSendMessage.mockReturnValueOnce(sendA.promise).mockReturnValueOnce(sendB.promise);
+
+      const view = await render(<MessagesScreen />);
+      await fireEvent.press(await view.findByText('Alex'));
+      await fireEvent.changeText(await view.findByTestId('message-input'), 'Message A');
+      await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+      expect(await view.findByText('Sending…')).toBeTruthy();
+
+      await fireEvent.press(view.getByText('Cancel'));
+      await fireEvent.press(view.getByText('Grace'));
+      expect(view.getByTestId('message-input').props.editable).toBe(true);
+      expect(view.queryByText('Sending…')).toBeNull();
+      await fireEvent.changeText(view.getByTestId('message-input'), 'Message B');
+      await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+      expect(await view.findByText('Sending…')).toBeTruthy();
+      expect(mockSendMessage).toHaveBeenNthCalledWith(1, 'conversation-1', 'Message A');
+      expect(mockSendMessage).toHaveBeenNthCalledWith(2, 'conversation-2', 'Message B');
+
+      await fireEvent.press(view.getByText('Cancel'));
+      await fireEvent.press(view.getByText('Alex'));
+      const pendingA = view.getByRole('button', { name: 'Sending…' });
+      expect(pendingA.props.accessibilityState?.disabled).toBe(true);
+      expect(view.getByTestId('message-input').props.editable).toBe(false);
+      await fireEvent.press(pendingA);
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      await fireEvent.press(view.getByText('Cancel'));
+      await fireEvent.press(view.getByText('Grace'));
+      expect(view.getByRole('button', { name: 'Sending…' })).toBeTruthy();
+
+      const firstSend = firstToFinish === 'A' ? sendA : sendB;
+      const secondSend = firstToFinish === 'A' ? sendB : sendA;
+      await act(async () => {
+        firstSend.resolve(undefined);
+        await firstSend.promise;
+      });
+
+      if (firstToFinish === 'A') {
+        expect(view.getByRole('button', { name: 'Sending…' })).toBeTruthy();
+        await fireEvent.press(view.getByText('Cancel'));
+        await fireEvent.press(view.getByText('Alex'));
+        await waitFor(() => expect(view.getByTestId('message-input').props.editable).toBe(true));
+        expect(view.queryByText('Sending…')).toBeNull();
+        await fireEvent.press(view.getByText('Cancel'));
+        await fireEvent.press(view.getByText('Grace'));
+        expect(view.getByRole('button', { name: 'Sending…' })).toBeTruthy();
+      } else {
+        await waitFor(() => expect(view.getByTestId('message-input').props.editable).toBe(true));
+        expect(view.queryByText('Sending…')).toBeNull();
+        await fireEvent.press(view.getByText('Cancel'));
+        await fireEvent.press(view.getByText('Alex'));
+        expect(view.getByRole('button', { name: 'Sending…' })).toBeTruthy();
+      }
+
+      await act(async () => {
+        secondSend.resolve(undefined);
+        await secondSend.promise;
+      });
+      await waitFor(() => expect(view.getByTestId('message-input').props.editable).toBe(true));
+      expect(view.queryByText('Sending…')).toBeNull();
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('keeps an inactive send failure with its conversation while another send continues', async () => {
+    const conversations = [
+      makeConversation(),
+      makeConversation({
+        id: 'conversation-2',
+        title: 'Grace',
+        directRecipientId: 'grace-profile',
+        otherParticipant: {
+          profileId: 'grace-profile',
+          firstName: 'Grace',
+          profileImageUrl: null,
+          avatarColor: null,
+        },
+      }),
+    ];
+    const sendA = deferred<void>();
+    const sendB = deferred<void>();
+    mockGetConversations.mockResolvedValue(conversations);
+    mockSendMessage.mockReturnValueOnce(sendA.promise).mockReturnValueOnce(sendB.promise);
+
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Message A');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await fireEvent.press(view.getByText('Cancel'));
+    await fireEvent.press(view.getByText('Grace'));
+    expect(view.getByTestId('message-input').props.value).toBe('');
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Message B');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+
+    await act(async () => {
+      sendA.reject(new Error('A failed'));
+      await sendA.promise.catch(() => undefined);
+    });
+    expect(view.queryByText('A failed')).toBeNull();
+    expect(view.getByRole('button', { name: 'Sending…' })).toBeTruthy();
+    await act(async () => {
+      sendB.resolve(undefined);
+      await sendB.promise;
+    });
+    await waitFor(() => expect(view.getByTestId('message-input').props.editable).toBe(true));
+    expect(view.queryByText('A failed')).toBeNull();
+
+    await fireEvent.press(view.getByText('Cancel'));
+    await fireEvent.press(view.getByText('Alex'));
+    expect(await view.findByText('A failed')).toBeTruthy();
+    expect(view.getByTestId('message-input').props.value).toBe('');
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Retry A');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(view.queryByText('A failed')).toBeNull());
+    expect(mockSendMessage).toHaveBeenLastCalledWith('conversation-1', 'Retry A');
+  });
+
+  it('refreshes previews again when another send completes during a list request', async () => {
+    const secondConversation = makeConversation({
+      id: 'conversation-2',
+      title: 'Grace',
+      directRecipientId: 'grace-profile',
+      otherParticipant: {
+        profileId: 'grace-profile',
+        firstName: 'Grace',
+        profileImageUrl: null,
+        avatarColor: null,
+      },
+    });
+    const conversations = [makeConversation(), secondConversation];
+    const sendA = deferred<void>();
+    const sendB = deferred<void>();
+    const staleList = deferred<Conversation[]>();
+    const freshList = deferred<Conversation[]>();
+    const updatedPreview = makeMessage('b-sent', 'Updated B preview', '2026-11-04T10:03:00.000Z');
+    mockGetConversations
+      .mockResolvedValueOnce(conversations)
+      .mockReturnValueOnce(staleList.promise)
+      .mockReturnValueOnce(freshList.promise);
+    mockSendMessage.mockReturnValueOnce(sendA.promise).mockReturnValueOnce(sendB.promise);
+
+    const view = await render(<MessagesScreen />);
+    await fireEvent.press(await view.findByText('Alex'));
+    await fireEvent.changeText(await view.findByTestId('message-input'), 'Message A');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+    await fireEvent.press(view.getByText('Cancel'));
+    await fireEvent.press(view.getByText('Grace'));
+    await fireEvent.changeText(view.getByTestId('message-input'), 'Message B');
+    await fireEvent.press(view.getByRole('button', { name: 'Send' }));
+
+    await act(async () => {
+      sendA.resolve(undefined);
+      await sendA.promise;
+    });
+    await waitFor(() => expect(mockGetConversations).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      sendB.resolve(undefined);
+      await sendB.promise;
+    });
+    expect(mockGetConversations).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      staleList.resolve(conversations);
+      await staleList.promise;
+    });
+    await waitFor(() => expect(mockGetConversations).toHaveBeenCalledTimes(3));
+    await act(async () => {
+      freshList.resolve([
+        conversations[0],
+        { ...secondConversation, latestMessage: updatedPreview },
+      ]);
+      await freshList.promise;
+    });
+    expect(await view.findByText('Updated B preview')).toBeTruthy();
+    await waitFor(() => expect(view.getByTestId('message-input').props.editable).toBe(true));
+  });
+
   it('disables empty sends and prevents duplicate sends while one is pending', async () => {
     const pendingSend = deferred<void>();
     mockSendMessage.mockReturnValue(pendingSend.promise);
